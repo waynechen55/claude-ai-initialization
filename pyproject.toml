@@ -1,0 +1,117 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "initialize-claude-ai"
+dynamic = ["version"]
+description = "Phased initializer for a Claude AI environment: install, authenticate, provision, and agentically discover MCP servers."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Wayne Chen" }]
+keywords = ["claude", "claude-code", "mcp", "model-context-protocol", "anthropic", "vertex-ai", "bedrock", "provisioning"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: System :: Installation/Setup",
+    "Topic :: System :: Systems Administration",
+]
+
+# Runtime dependencies are deliberately minimal: the tool must be able to run on a
+# machine *before* the Claude environment exists. Everything optional degrades
+# gracefully (see initialize_claude_ai.core.http and
+# initialize_claude_ai.mcp_auto_discovery.runtime).
+#
+# The one exception is a TOML parser, because the program cannot read its own
+# defaults without one. 3.11+ has tomllib in the standard library; 3.10 does
+# not, so tomli is required there and nowhere else.
+dependencies = ['tomli>=2.0; python_version < "3.11"']
+
+[project.urls]
+Homepage = "https://github.com/waynechen55/claude-ai-initialization"
+Repository = "https://github.com/waynechen55/claude-ai-initialization"
+Issues = "https://github.com/waynechen55/claude-ai-initialization/issues"
+Changelog = "https://github.com/waynechen55/claude-ai-initialization/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+# Installed by phase 1 into the target environment, not required to run phase 1.
+http = ["httpx>=0.27"]
+agentic = ["claude-agent-sdk>=0.1.0", "anthropic>=0.40"]
+keyring = ["keyring>=24"]
+# Everything a contributor and CI need. Tools whose output CI compares (ruff)
+# are pinned exactly, so a new release cannot fail a pull request that did not
+# change anything; CI installs single tools from this list
+# (tools/dev_requirement.py), so there is one place to bump them.
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "pytest-xdist>=3.5",
+    "pytest-cov>=5",
+    "ruff==0.11.13",
+    "build>=1.2",
+    "twine>=5",
+]
+
+[project.scripts]
+initialize-claude-ai = "initialize_claude_ai.cli:main"
+
+[tool.setuptools.dynamic]
+# The one place the version is written: initialize_claude_ai/__init__.py.
+# tools/check_version.py keeps the changelog, the release tag and the
+# generated bridge's fallback in step with it.
+version = { attr = "initialize_claude_ai.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["initialize_claude_ai*"]
+
+[tool.setuptools.package-data]
+# The skills are instructions the phase-4 agents load at run time, so they have
+# to travel with the package like any other data file.
+initialize_claude_ai = ["data/*.toml", "skills/*/SKILL.md", "skills/*/*/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["error::DeprecationWarning:initialize_claude_ai.*"]
+# The suite is offline by design. A test that genuinely needs the internet is
+# marked `network` and left out unless asked for: pytest -m network
+markers = ["network: needs the internet; excluded by default (run with -m network)"]
+addopts = ["-m", "not network"]
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.coverage.run]
+source = ["initialize_claude_ai"]
+# Statement coverage: tests start the program in subprocesses, which record
+# from their own working directory, and coverage cannot merge statement data
+# into branch data.
+parallel = true
+
+[tool.coverage.report]
+# The floor measured when CI was introduced; raise it as coverage grows,
+# never lower it to make a pull request pass.
+fail_under = 84
+show_missing = false
+skip_covered = true
+
+[tool.ruff]
+# Pinned here rather than left to the default so that CI, a contributor's
+# editor and `ruff check` on this machine all agree. Long lines are tolerated
+# because the alternative is breaking readable argument lists and log messages
+# across three lines each.
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+# E4/E7/E9 + F is ruff's default; W catches trailing whitespace, and I keeps
+# imports in one order so a diff shows the change and not the reshuffle.
+select = ["E4", "E7", "E9", "F", "W", "I"]

@@ -1,0 +1,20 @@
+name: Feature request
+description: Something the program should do, or do differently.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what gets in the way?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: Remember the project's rule — behaviour is driven by configuration (TOML), not by naming products in code.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

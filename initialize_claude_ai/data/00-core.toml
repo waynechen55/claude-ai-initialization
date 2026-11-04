@@ -1,0 +1,533 @@
+####################################################################
+# initialize-claude-ai :: core defaults
+#
+# Every value here is overridable, in increasing precedence, by:
+#   /etc/initialize-claude-ai/config.toml
+#   $XDG_CONFIG_HOME/initialize-claude-ai/config.toml
+#   ./initialize-claude-ai.toml
+#   --config FILE
+#   INITIALIZE_CLAUDE_AI_<SECTION>__<KEY>=value      ('__' separates nesting levels)
+#   --set section.key=value
+#
+# Strings support ${ENV_VAR}, ${ENV_VAR:-fallback} and ${cfg:dotted.key}.
+####################################################################
+
+[meta]
+name = "initialize-claude-ai"
+description = "Phased Claude AI environment initializer"
+
+[paths]
+# Where initialize-claude-ai keeps its own state (env.json, logs, generated bridges).
+state_dir = "${INITIALIZE_CLAUDE_AI_STATE_DIR:-${XDG_STATE_HOME:-${HOME}/.local/state}/initialize-claude-ai}"
+# Claude Code's own configuration directory.
+claude_home = "${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
+# Scratch space for downloads, generated MCP bridges and sandboxed installs.
+work_dir = "${cfg:paths.state_dir}/work"
+# The run's own record: every line printed on screen and every log record
+# underneath it, in one file, in the order they happened. Empty means "do not
+# record"; --log-file FILE points it elsewhere and --no-log-file turns it off.
+#
+# Relative, so it lands in the directory the command was run from rather than
+# somewhere under ~/.local/state that has to be looked up first: the log is for
+# the person watching the install, and it should be where they already are. Give
+# an absolute path here (or in INITIALIZE_CLAUDE_AI_LOG_FILE) to pin it instead.
+log_file = "${INITIALIZE_CLAUDE_AI_LOG_FILE:-claude_ai_initialization.log}"
+# Extra directories searched for binaries, ahead of PATH.
+extra_bin_dirs = [
+    "${HOME}/.local/bin",
+    "${HOME}/.claude/local",
+    "${HOME}/bin",
+    "/usr/local/bin",
+    "/opt/homebrew/bin",
+    "/home/linuxbrew/.linuxbrew/bin",
+    "/snap/bin",
+    "/var/lib/flatpak/exports/bin",
+    "${HOME}/.local/share/flatpak/exports/bin",
+    "/usr/local/google-cloud-sdk/bin",
+    "${HOME}/google-cloud-sdk/bin",
+    # Where the user-level installers of the mcp-runtimes toolchains put them
+    # (10-components.toml), so one installed earlier is found, not reinstalled.
+    "${HOME}/.cargo/bin",
+    "${HOME}/.deno/bin",
+    "${HOME}/.bun/bin",
+    "${HOME}/.local/share/go/bin",
+]
+
+[env]
+# Prefix for variables recorded by phase 1 (INITIALIZE_CLAUDE_AI_BIN_CLAUDE, ...).
+prefix = "INITIALIZE_CLAUDE_AI_"
+# Variables written without the prefix because third-party tools read them.
+passthrough = [
+    "ANTHROPIC_VERTEX_PROJECT_ID",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLOUD_ML_REGION",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+]
+
+# What this program wrote last time, handed back to it as "the environment".
+#
+# Claude Code exports the env block of its settings files into every process it
+# launches, so a run started from inside Claude Code inherits the very answers
+# its own last run wrote: CLOUD_ML_REGION, ANTHROPIC_VERTEX_PROJECT_ID, the tier
+# pins, CLAUDE_CODE_USE_VERTEX. Taken at face value they outrank an env file and
+# every configured default, and that is a loop -- the first value ever written
+# is the one that goes on being written, and correcting it anywhere but on the
+# command line has no effect. (This is exactly how a hand-edited
+# CLOUD_ML_REGION=us survived every run on a machine whose shell said
+# GOOGLE_CLOUD_LOCATION=global.)
+#
+# So they are taken back out of the environment before anything is resolved,
+# which leaves the order the operator would expect: the command line first, then
+# the env files and the configuration, and the settings file already on disk
+# last. Last is still a source -- the values are kept, and a setting with no
+# other answer may fall back to one (the Vertex project does).
+#
+# Only an exact match is demoted: a variable whose value differs from the file
+# cannot be that file's echo, so it is somebody's real answer and is left alone.
+[environment]
+demote_echo = true
+# The settings files Claude Code merges and re-exports, user scope then project
+# scope. Named here rather than in code so another host layout is a config edit.
+echo_files = [
+    "${cfg:paths.claude_home}/${cfg:provision.settings_filename}",
+    "${cfg:provision.project_settings_dir}/${cfg:provision.settings_filename}",
+]
+# The key inside those files that holds the exported block.
+echo_key = "env"
+# Names eligible for it, as shell-style patterns: the coordinates this program
+# writes and would otherwise read back. An allow list rather than "everything in
+# the block", so a variable the operator put there for their own reasons keeps
+# working the way it always did.
+echo_names = [
+    "ANTHROPIC_*",
+    "CLAUDE_CODE_*",
+    "CLOUD_ML_REGION",
+    "GOOGLE_CLOUD_*",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "INITIALIZE_CLAUDE_AI_*",
+]
+# ... except these, whatever the patterns above say. A credential kept in the
+# settings file is the only copy there is: demoting it would not correct a stale
+# answer, it would lose the answer. Phase 2 goes on seeing it exactly as before.
+echo_keep = [
+    "*API_KEY*",
+    "*TOKEN*",
+    "*SECRET*",
+    "*PASSWORD*",
+    "*CREDENTIALS*",
+]
+
+[logging]
+# Verbosity on screen. The file keeps file_level regardless, so --quiet and a
+# raised level still leave a complete record behind in paths.log_file.
+level = "${INITIALIZE_CLAUDE_AI_LOG_LEVEL:-info}"
+file_level = "${INITIALIZE_CLAUDE_AI_LOG_FILE_LEVEL:-debug}"
+format = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
+# Shared by the log records and the per-run header in the log file.
+date_format = "%Y-%m-%d %H:%M:%S"
+# Mirror the console -- banners, status lines, summary boxes, the JSON report --
+# into paths.log_file alongside the log records. false records only what was
+# logged, which is the behaviour of an ordinary log file.
+record_output = "${INITIALIZE_CLAUDE_AI_LOG_RECORD_OUTPUT:-true}"
+# Render each log record's level on screen as the same badge the report uses, so
+# a WARNING on stderr and a [PARTIAL] step on stdout look alike in the one
+# scrollback they share. Affects the terminal only; the file keeps the plain
+# 'format' above, because a record that has to be grepped in six months should
+# not have a sign in front of it. false gives the terminal that plain form too.
+badges = "${INITIALIZE_CLAUDE_AI_LOG_BADGES:-true}"
+# Roll the log over once it passes this size, keeping this many older copies
+# (claude_ai_initialization.log.1, .2, ...). Checked when the file is opened, so
+# no run rotates out from under itself. 0 for either means "never rotate".
+max_bytes = "${INITIALIZE_CLAUDE_AI_LOG_MAX_BYTES:-5000000}"
+backups = "${INITIALIZE_CLAUDE_AI_LOG_BACKUPS:-3}"
+
+# How the phase banners and the end-of-phase summary reports are drawn.
+[console]
+# Frame characters: auto | unicode | ascii. 'auto' asks the output stream whether
+# it can encode a box-drawing character and falls back to ASCII when it cannot,
+# which is what happens on a host still in the C/POSIX locale.
+glyphs = "${INITIALIZE_CLAUDE_AI_CONSOLE_GLYPHS:-auto}"
+# Put the date and time in front of every line that records something
+# happening -- on screen and in the log file, in logging.date_format, which is
+# the format the log records already use.  Without it the transcript
+# interleaves stamped detail with unstamped narration and the two cannot be
+# lined up, so the file cannot answer "how long did that stage take?" about its
+# own contents.
+#
+# Structural lines are never stamped, whatever this says: the frames and
+# interiors of boxes, table rows, blank lines and the --json report.  A box is
+# one event rather than a line each, its alignment depends on its width, and a
+# stamp repeated down the side of a summary would be twenty copies of the same
+# second.  The heading that introduces a section carries the time instead.
+timestamps = "${INITIALIZE_CLAUDE_AI_CONSOLE_TIMESTAMPS:-true}"
+# Colour palette: auto | vibrant | daylight | contrast | soft | basic
+# ('classic', 'standard' and 'ansi' are accepted as other names for 'basic',
+# which is the eight-colour scheme most terminal colour guides publish: green
+# pass, red fail, amber caveat, cyan in flight, bold blue heading, dim detail).
+# 'vibrant' is the default. Four of its six hues are at the full chroma of the
+# 256-colour cube -- emerald, amber, cyan -- so the report is properly coloured
+# rather than tinted grey, and every one of them still measures between 7:1 and
+# 11.7:1 against a dark terminal: well clear of the 4.5:1 at which text stops
+# being readable, and short of the neon corners (#00ff00 is 15:1) that make
+# people turn colour off. 'contrast' is the same six meanings with that chroma
+# traded for an even weight -- a tighter 7:1-10:1 band, calmer over an hour where
+# 'vibrant' is quicker to scan in ten seconds. 'daylight' is the design inverted
+# for a light background, where being too pale rather than too bright is what
+# makes a colour unreadable. 'soft' is the quiet one; 'basic' is the plain eight
+# colours, used where 256-colour escapes would print as literal text. 'auto'
+# picks 'vibrant' -- or 'daylight' when COLORFGBG says the background is light --
+# wherever COLORTERM or a 256-colour TERM says the terminal can render it, and
+# 'basic' where it cannot. In every palette the hue means the same thing, and
+# never carries the meaning alone: each line also states its status in words.
+# Preview them all with `initialize-claude-ai palette`. Colour is turned off
+# entirely by --no-color, NO_COLOR or a non-tty.
+palette = "${INITIALIZE_CLAUDE_AI_CONSOLE_PALETTE:-auto}"
+# Total width of rules, banners and summary boxes, in columns. Kept fixed rather
+# than read from the terminal so that piped output and captured logs line up
+# with what was on screen.
+width = "${INITIALIZE_CLAUDE_AI_CONSOLE_WIDTH:-80}"
+# Draw the frames at all. false collapses every banner and summary box to plain
+# unframed lines, for log scrapers and for anyone who prefers it that way.
+decorate = "${INITIALIZE_CLAUDE_AI_CONSOLE_DECORATE:-true}"
+# Print a cyan [RUNNING] line before the few steps that can take a minute with
+# nothing to show -- a package install, a phase-4 stage, a subagent turn. Only
+# those: a running line for every step would double the length of the report to
+# say what the verdict line says a moment later. false leaves only the verdicts.
+progress = "${INITIALIZE_CLAUDE_AI_CONSOLE_PROGRESS:-true}"
+# Longest step-name list rendered in a summary before it is elided with a count.
+# Keeps a 200-step phase-1 run from burying its own verdict.
+max_named_steps = 12
+
+[run]
+# Continue to the next phase when one reports 'partial'. --no-partial-success is
+# the command-line form of setting this to false.
+continue_on_partial = true
+# Continue even when a phase fails outright (useful for --json audits).
+# --ignore-failure is the command-line form of setting this to true.
+continue_on_failure = false
+# Make 'partial' a non-zero exit status.
+partial_is_failure = false
+# Phases run when --phases is not given. 'all' is every registered phase, so a
+# phase added later is included without anyone remembering to edit this list.
+default_phases = ["all"]
+# Per-command default timeout, seconds. Downloads override this individually.
+command_timeout_seconds = 600
+# What happens when a command outruns that timeout. The child is started in a
+# session of its own, so these signals go to it and to everything it started,
+# in order, each followed by stop_grace_seconds of waiting. If the last one
+# goes unanswered the child is abandoned rather than waited on: a timeout has
+# to mean the run continues, and a grandchild holding an inherited pipe open
+# must not be able to turn a 900-second limit into an overnight stall.
+stop_signals = ["TERM", "KILL"]
+stop_grace_seconds = 5
+# --------------------------------------------------------------------------- #
+# The two global time controls.  Both are off by default and both are no-ops
+# when absent: a run with neither behaves exactly as it did before they existed.
+# --------------------------------------------------------------------------- #
+# A wall-clock ceiling for the whole run, in seconds; 0 means none, which is the
+# default.  --timeout takes suffixes (45s, 90m, 2h, 1d) and writes seconds here.
+#
+# This is not the same thing as a timeout and cannot be built out of them.  Every
+# operation is already bounded -- a probe at 8 seconds, a stage at 180, an agent
+# turn at 900 -- and phase 4 still took 259 minutes against thirteen addresses,
+# because that is what a few hundred well-behaved operations add up to.
+#
+# It stops *admission*, not work in progress: an address that has already begun
+# is left to finish, because killing an agent mid-turn throws away tokens already
+# spent.  So the run can overrun by as long as one address takes.  The verdict is
+# PARTIAL and the report names every address that was never attempted.
+#
+# Named deadline_seconds rather than timeout_seconds on purpose: timeout_scale
+# below matches on that suffix, and the one duration that must never be scaled
+# is the ceiling you typed.  A different name is a better guard than an
+# exception list, because nobody has to remember to maintain it.
+deadline_seconds = "${INITIALIZE_CLAUDE_AI_TIMEOUT:-0}"
+# Multiplies every per-operation timeout; 1.0 is as written, which is the
+# default.  This is the honest form of "one global timeout value": the timeouts
+# here span 5 seconds (a TCP connect) to 1800 (waiting for a person at a
+# browser), so one value *substituted* everywhere would kill agent turns at 30
+# seconds or leave dead connections hanging for half an hour.  Multiplying keeps
+# the relationships and answers the question people actually have -- this
+# machine, or this link, is slower than you assumed.  Useful with --concurrency,
+# where several addresses contend for the same CPU and network.
+timeout_scale = "${INITIALIZE_CLAUDE_AI_TIMEOUT_SCALE:-1.0}"
+# Which settings timeout_scale applies to, matched against the *last* segment of
+# the key -- most timeouts are read through a section view and have no full path
+# to match.  The suffix is what keeps the five look-alikes out: progress_interval_
+# seconds is a heartbeat, latency_target_seconds and latency_ceiling_seconds are
+# thresholds for *scoring* a server when ranking (stretching those would change
+# which server wins), stop_grace_seconds is the SIGTERM-to-SIGKILL gap, and
+# timeout_turn_scale is itself a multiplier.  None of them ends in this suffix.
+timeout_scale_suffixes = ["timeout_seconds"]
+
+# ------------------------------------------------------------------
+# What the run says about itself before it does anything
+#
+# Every value this program acts on comes from one of four places -- the command
+# line, an environment variable, a config or env file, or a packaged default --
+# and which one won is invisible once the run is under way. A phase that picks
+# the wrong region, skips a component or talks to the wrong project is almost
+# always a layer nobody remembered was set, and the cheapest way to see that is
+# to print, before the first phase, what is actually in effect.
+#
+# Only the values the host changed are listed: the full document is hundreds of
+# keys, and one that still holds its packaged default explains nothing. The
+# whole of it is `initialize-claude-ai config`.
+# ------------------------------------------------------------------
+
+# Free space.  Before the first phase, and before each one after it, every
+# filesystem the run writes to -- these paths, plus the temporary directory,
+# the project directory and the program's state and work directories -- must
+# have min_free_mb free, or the run stops there and says which filesystem, by
+# how much, and what of this program's lies on it.  A run once started on a
+# full disk, reported OK for installs that had just failed with "No space left
+# on device", broke in phase 4 and could no longer even write its log.
+[run.disk]
+check = true
+min_free_mb = 1024
+paths = ["${HOME}/.npm", "${HOME}/.cache"]
+# Wordings of a full disk in a command's output (an OSError with ENOSPC or
+# EDQUOT is recognised without them).  Seen anywhere, the run stops with one
+# verdict instead of going on into failures that look like something else.
+out_of_space_markers = ["No space left on device", "ENOSPC", "Disk quota exceeded", "EDQUOT"]
+# Shared package caches the run fills, and the command that shrinks each.
+# Named in the advice, never run: they belong to the operator, not to this run.
+[run.disk.cache_cleanup]
+"~/.cache/uv" = "uv cache prune"
+"~/.npm" = "npm cache clean --force"
+"~/.cache/pip" = "pip cache purge"
+"~/.cache/go-build" = "go clean -cache"
+
+# This program's own leftovers, removed at the end of a run (--do-cleanup, on
+# by default; --no-cleanup keeps everything).  Never a shared cache, never
+# anything an MCP entry on this machine names, never in a dry run.
+#   temp_prefixes     temporary directories this program creates (the client
+#                     bridge's per-start configuration, download scratch);
+#                     only those older than temp_min_age_minutes, so a server
+#                     that is running keeps its own.
+#   require_owner_marker  a temporary directory is removed only when it holds
+#                     the marker file this program puts in every one it makes
+#                     (.initialize-claude-ai-owned).  The prefix says where to
+#                     look, never whose it is: matched by name alone, cleanup
+#                     removed somebody's /tmp/ica-baseline.  Unmarked ones are
+#                     logged and left alone.
+#   work_subtrees     globs under the work directory (agent build files, trial
+#                     environments) removed oldest first until the work
+#                     directory is under work_budget_mb.
+[run.cleanup]
+enabled = "${INITIALIZE_CLAUDE_AI_DO_CLEANUP:-true}"
+temp_prefixes = ["mcp-client-", "initialize-claude-ai-", "ica-"]
+temp_min_age_minutes = 60
+require_owner_marker = true
+work_subtrees = ["agent-workspace/artifacts/*", "agent-workspace/.claude/.skills.*", "mcp-trials/*"]
+work_budget_mb = 512
+[run.invocation]
+# Print the block. It goes to the log either way, so turning it off makes the
+# terminal quieter without making the record less complete.
+show = "${INITIALIZE_CLAUDE_AI_SHOW_INVOCATION:-true}"
+# Environment variables reported, as shell-style patterns. These are the names
+# this program and the tools it drives actually read; anything else in the
+# environment is none of its business and is not put on screen or in the log.
+env_patterns = [
+    "INITIALIZE_CLAUDE_AI_*",
+    "ANTHROPIC_*",
+    "CLAUDE_CODE_*",
+    "CLAUDE_*",
+    "CLOUD_ML_REGION",
+    "GOOGLE_CLOUD_*",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "CLOUDSDK_*",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "AWS_PROFILE",
+    "DEFAULT_MODEL",
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+    "http_proxy", "https_proxy", "no_proxy",
+]
+# Variables never named as the reason a setting has the value it has. A default
+# written "${HOME}/.claude" does read HOME, and saying so on a dozen path
+# settings buries the one line that explains the run. These describe the machine,
+# not this program's configuration.
+ignore_env = [
+    "HOME", "USER", "LOGNAME", "SHELL", "PATH", "PWD", "TMPDIR", "LANG", "LC_*",
+    "XDG_*",
+]
+# Longest list rendered per section before it is elided with a count. A block
+# nobody reads to the end is worth less than one that fits on the screen.
+max_rows = "${INITIALIZE_CLAUDE_AI_SHOW_INVOCATION_ROWS:-24}"
+
+# ------------------------------------------------------------------
+# Where a value can come from
+#
+# No command-line flag carries a default in the argument parser; a flag left
+# out is simply silent, and the value is looked for in the layers underneath --
+# config files, then the environment, which is where an --env-file lands before
+# any ${VAR} below is expanded. That is what lets one global env file of plain
+# UPPER_CASE variables drive a whole run with no flags at all.
+#
+# This table is the index of that arrangement: for each setting, the flag that
+# sets it and the variable names it falls back to, in the order they are
+# consulted. It is quoted verbatim when a run has to stop because a value it
+# cannot do without was nowhere to be found -- so the operator is told the flag
+# *and* the variables, rather than being left to work out which of the two
+# spellings of "the project" this program happens to read.
+#
+# Data, not code: a new source is a name in a list here and a ${...} in the
+# packaged defaults, with nothing to change in Python.
+# ------------------------------------------------------------------
+[sources]
+# A per-backend key falls back to its last two segments, so the single
+# model_aliases.opus entry below answers for every backend's copy of it.
+
+[sources."auth.google_cloud.account"]
+flag = "--gcloud-user-account"
+env = ["INITIALIZE_CLAUDE_AI_GCP_ACCOUNT", "GOOGLE_CLOUD_USER_ACCOUNT"]
+
+[sources."auth.google_cloud.project"]
+flag = "--gcloud-project"
+env = ["GOOGLE_CLOUD_PROJECT", "CLOUDSDK_CORE_PROJECT", "ANTHROPIC_VERTEX_PROJECT_ID"]
+
+[sources."auth.claude_oauth.account"]
+flag = "--claude-user-account"
+env = ["INITIALIZE_CLAUDE_AI_CLAUDE_ACCOUNT"]
+
+[sources."provision.backend"]
+flag = "--provision-backend"
+env = ["INITIALIZE_CLAUDE_AI_BACKEND"]
+
+[sources."provision.vertex.enabled"]
+flag = "--use-vertex"
+env = ["INITIALIZE_CLAUDE_AI_USE_VERTEX", "CLAUDE_CODE_USE_VERTEX"]
+
+[sources."provision.vertex.project"]
+flag = "--gcloud-project"
+env = ["ANTHROPIC_VERTEX_PROJECT_ID", "GOOGLE_CLOUD_PROJECT", "CLOUDSDK_CORE_PROJECT"]
+# Sources this program can reach that are not variables at all. Listed so the
+# failure message offers every real way out, not only the ones it reads itself.
+also = ["the project phase 2 signed in against", "gcloud config set project <project>"]
+# --gcloud-project writes auth.google_cloud.project as well, so one flag names
+# the project for the sign-in and for what is provisioned against it.
+
+[sources."provision.vertex.region"]
+flag = "--gcloud-region"
+env = ["CLOUD_ML_REGION", "GOOGLE_CLOUD_LOCATION"]
+
+[sources."provision.anthropic_api.base_url"]
+env = ["ANTHROPIC_BASE_URL"]
+
+[sources."provision.bedrock.region"]
+# Deliberately no flag: --gcloud-region names a location in Google Cloud and
+# would be a lie about this one.
+env = ["AWS_REGION"]
+also = ["--set provision.bedrock.region=<region>"]
+
+[sources."provision.settings.model"]
+flag = "--default-model"
+env = ["INITIALIZE_CLAUDE_AI_MODEL", "DEFAULT_MODEL"]
+
+[sources."model_aliases.opus"]
+flag = "--default-opus-model"
+env = ["ANTHROPIC_DEFAULT_OPUS_MODEL"]
+
+[sources."model_aliases.sonnet"]
+flag = "--default-sonnet-model"
+env = ["ANTHROPIC_DEFAULT_SONNET_MODEL"]
+
+[sources."model_aliases.haiku"]
+flag = "--default-haiku-model"
+env = ["ANTHROPIC_DEFAULT_HAIKU_MODEL"]
+
+[http]
+timeout_seconds = 15
+connect_timeout_seconds = 5
+user_agent = "initialize-claude-ai/0.1 (+https://modelcontextprotocol.io)"
+verify_tls = true
+max_response_bytes = 2000000
+follow_redirects = true
+
+[secrets]
+# Allow reference schemes that execute a command (command:, gcloud-adc, ...).
+allow_execution = true
+# Allow interactive no-echo prompting when a reference says prompt:.
+allow_prompt = true
+# Allow a credential carried inline as literal:VALUE -- which is what the plain
+# --auth-anthropic-key style flags compile to. --secure sets this false, and then a
+# credential must be *named* (env:, file:, keyring:, command:) wherever it
+# comes from: this file, the environment, --set or the command line.
+allow_literal = true
+# Warn when a credential file is group/world readable.
+strict_file_permissions = true
+# How long a command: reference may run before it counts as failed. The
+# gcloud-token/gcloud-adc references use the gcloud commands' own entries in
+# auth.google_cloud.command_timeout_seconds.
+command_timeout_seconds = 60
+
+# Regexes whose matches are masked in every log line, report and agent prompt.
+# Single-quoted TOML strings are literal: no backslash escaping needed.
+[redaction]
+patterns = [
+    'sk-ant-[A-Za-z0-9_\-]{16,}',
+    'sk-[A-Za-z0-9]{32,}',
+    'ya29\.[A-Za-z0-9._\-]{20,}',
+    'ghp_[A-Za-z0-9]{20,}',
+    'github_pat_[A-Za-z0-9_]{20,}',
+    'gho_[A-Za-z0-9]{20,}',
+    'AIza[A-Za-z0-9_\-]{30,}',
+    'xox[baprs]-[A-Za-z0-9\-]{10,}',
+    'eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}',
+    '-----BEGIN[A-Z ]*PRIVATE KEY-----.*?-----END[A-Z ]*PRIVATE KEY-----',
+    # Multi-line literal so the pattern can contain both quote characters.
+    '''(?i)\b(api[_-]?key|auth[_-]?token|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|secret)\b\s*[=:]\s*["']?([^\s"',;}]{6,})''',
+    # A credential written into a URL (http://user:pw@host), which is how an
+    # appliance behind basic auth gets passed around and handed to --mcp-server.
+    # The group named "secret" is the only part masked, so the line still reads
+    # as the address it is.
+    '(?i)\b[a-z][a-z0-9+.\-]*://[^/\s:@]*:(?P<secret>[^/\s@]+)@',
+]
+
+[machine_env]
+# One writer for every per-machine variable (core/machine_env.py): a value that
+# belongs to this machine -- the CA bundle Claude Code needs to trust an
+# internal root, a raised start-up wait, a runtime setting -- is brought to the
+# same end state in every place a new terminal's Claude Code reads.  A line
+# commented out is uncommented, a missing one added (in this program's marked
+# block), a wrong one corrected in place (also when another tool wrote it), a
+# right one recognised.  Every place and its outcome is logged on every run;
+# nothing of it goes into .mcp.json.  openqa-example-net failed with
+# UNABLE_TO_GET_ISSUER_CERT_LOCALLY while ~/.bashrc and ~/.profile exported a
+# NODE_EXTRA_CA_CERTS naming a deleted /tmp file.
+enabled = true
+# "settings" is Claude Code's settings.json env; the rest are shell files.  A
+# place the run may not write (/etc/profile.d without root) is reported with
+# the exact line to add.
+places = ["settings", "~/.bashrc", "~/.profile", "/etc/profile.d/initialize-claude-ai.sh"]
+# Written too when they exist: a login bash reads ~/.bash_profile instead of
+# ~/.profile when there is one.
+places_if_present = ["~/.bash_profile", "~/.bash_login", "~/.zshrc", "~/.zprofile"]
+# Startup files scanned for a line that already sets the variable: each one
+# found is a place too, corrected in place.  Another installer had written
+# /etc/profile.d/node_extra_ca_certs.sh exporting a deleted /tmp bundle, which a
+# login shell read after everything else.
+scan = ["/etc/profile", "/etc/profile.local", "/etc/bash.bashrc", "/etc/bash.bashrc.local", "/etc/profile.d/*.sh", "~/.bash_profile", "~/.bash_login", "~/.profile", "~/.bashrc", "~/.zshrc", "~/.zprofile"]
+block_begin = "# >>> initialize-claude-ai: per-machine values (managed; see its log) >>>"
+block_end = "# <<< initialize-claude-ai: per-machine values <<<"
+backup = true
+backup_suffix = "%Y%m%d-%H%M%S"
+# Afterwards each shell is asked what it ends with: a later line or file can
+# undo an earlier one.  {probe} prints the variable after a marker.
+check_effective = true
+shell_timeout_seconds = 20.0
+say_on_console = true
+[machine_env.effective_shells]
+"a new login shell" = ["bash", "-lc", "{probe}"]
+"a new interactive shell" = ["bash", "-ic", "{probe}"]

@@ -1,0 +1,228 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  commits:
+    name: commit message and count
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: One commit, with a title and a body
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 tools/check_commits.py "$BASE_SHA" "$HEAD_SHA"
+
+  lint:
+    name: lint and format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Install ruff (version pinned in pyproject's dev extra)
+        run: python -m pip install "$(python3 tools/dev_requirement.py ruff)"
+      - name: ruff check
+        run: ruff check initialize_claude_ai tests tools
+      - name: ruff format --check
+        run: ruff format --check initialize_claude_ai tests tools
+
+  test:
+    name: tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    # ~3700 tests run in about a minute on 12 workers (5 with coverage); the
+    # limit catches a hang, not a slow runner.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor is what pyproject declares; 3.10 also proves the tomli dependency.
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Test
+        # Offline and hermetic: HOME and the XDG directories are redirected into
+        # tmp_path and the program's variables are removed, so it needs no
+        # credentials and touches nothing on the runner. Coverage (and its
+        # floor, pyproject's fail_under) is measured once, on 3.13.
+        env:
+          COVERAGE: ${{ matrix.python-version == '3.13' && '--cov --cov-report=term --cov-report=xml' || '' }}
+        run: |
+          read -ra coverage <<< "$COVERAGE"
+          python -m pytest -n auto "${coverage[@]}"
+      - name: Upload coverage report
+        if: matrix.python-version == '3.13'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          retention-days: 14
+
+  test-opensuse:
+    name: tests (openSUSE Tumbleweed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: registry.opensuse.org/opensuse/tumbleweed:latest
+    steps:
+      - name: Prerequisites
+        run: zypper --non-interactive install --no-recommends python313 python313-pip git tar gzip
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install
+        run: |
+          python3.13 -m venv /opt/venv
+          /opt/venv/bin/python -m pip install -e ".[dev]"
+      - name: Test
+        run: /opt/venv/bin/python -m pytest -n auto
+
+  cli-smoke:
+    name: CLI smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: python -m pip install .
+      - name: Every read-only command runs
+        run: |
+          export HOME="$RUNNER_TEMP/home" && mkdir -p "$HOME"
+          initialize-claude-ai --version
+          initialize-claude-ai --help > /dev/null
+          initialize-claude-ai --no-log-file phases
+          initialize-claude-ai --no-log-file config meta
+          initialize-claude-ai --no-log-file env
+          initialize-claude-ai --no-log-file palette > /dev/null
+
+  package:
+    name: build and install the package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Build
+        run: |
+          python -m pip install "$(python3 tools/dev_requirement.py build)" "$(python3 tools/dev_requirement.py twine)"
+          python -m build
+          python -m twine check --strict dist/*
+      - name: The wheel installs, carries its data and reports its version
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install dist/*.whl
+          cd "$RUNNER_TEMP"
+          export HOME="$RUNNER_TEMP/home" && mkdir -p "$HOME"
+          expected="$(python3 "$GITHUB_WORKSPACE/tools/check_version.py" --print)"
+          test "$("$RUNNER_TEMP/venv/bin/initialize-claude-ai" --version)" = "initialize-claude-ai $expected"
+          "$RUNNER_TEMP/venv/bin/python" "$GITHUB_WORKSPACE/tools/check_package_data.py"
+
+  secrets:
+    name: secrets and internal names
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+      GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks (checksum verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+      - name: No secrets in any commit
+        run: '"$RUNNER_TEMP/gitleaks" git --redact --no-banner --exit-code 1 .'
+      - name: No internal host names or personal paths
+        run: python3 tools/check_names.py
+
+  docs:
+    name: docs and version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          # The CLI reference is rendered by argparse, whose layout is
+          # version-specific; it is generated and checked on 3.13.
+          python-version: "3.13"
+      - name: Install
+        run: python -m pip install -e .
+      - name: Generated references are current
+        run: python tools/gen_docs.py --check
+      - name: Every relative link resolves
+        run: python tools/check_links.py
+      - name: One version everywhere
+        run: python tools/check_version.py
+
+  ci-ok:
+    # The single check branch protection requires: green only when every job
+    # above passed (the commit check is skipped, not failed, on pushes to main).
+    name: CI passed
+    if: always()
+    needs: [commits, lint, test, test-opensuse, cli-smoke, package, secrets, docs]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Every required job succeeded
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+          COMMITS: ${{ needs.commits.result }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          echo "$RESULTS"
+          if [ "$EVENT" = "pull_request" ] && [ "$COMMITS" != "success" ]; then
+            echo "::error::the commit check did not pass"; exit 1
+          fi
+          echo "$RESULTS" | python3 -c 'import json,sys; bad=[r for r in json.load(sys.stdin) if r not in ("success","skipped")]; sys.exit(1 if bad else 0)'
