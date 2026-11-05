@@ -14,7 +14,7 @@ detailed record of how the program reached 0.1.0 is in
 
 ## [0.1.0] - 2026-11-04
 
-First public release.
+First public release, under the Apache License 2.0.
 
 ### Added
 

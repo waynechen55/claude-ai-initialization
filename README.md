@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/waynechen55/claude-ai-initialization/actions/workflows/ci.yml/badge.svg)](https://github.com/waynechen55/claude-ai-initialization/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/waynechen55/claude-ai-initialization?include_prereleases&sort=semver)](https://github.com/waynechen55/claude-ai-initialization/releases)
 
 **Take a bare Linux machine to a working, verified Claude Code environment — and
@@ -374,4 +374,4 @@ rather than opening an issue.
 
 ## License
 
-[MIT](LICENSE) © 2026 Wayne Chen.
+[Apache License 2.0](LICENSE) © 2026 Wayne Chen. See [NOTICE](NOTICE).

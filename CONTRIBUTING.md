@@ -850,4 +850,4 @@ Pull requests are merged by squash, so `main` gets one commit per pull request.
 Releases are described in [docs/release-process.md](docs/release-process.md).
 
 By contributing you agree your work is licensed under the
-[MIT License](LICENSE). Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+[Apache License 2.0](LICENSE), as its section 5 describes. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).

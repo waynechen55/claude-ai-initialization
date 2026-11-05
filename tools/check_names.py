@@ -53,6 +53,7 @@ SOURCE = [
     "SECURITY.md",
     "CODE_OF_CONDUCT.md",
     "LICENSE",
+    "NOTICE",
     ".env.example",
     "pyproject.toml",
     ".gitignore",

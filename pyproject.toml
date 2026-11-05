@@ -8,8 +8,8 @@ dynamic = ["version"]
 description = "Phased initializer for a Claude AI environment: install, authenticate, provision, and agentically discover MCP servers."
 readme = "README.md"
 requires-python = ">=3.10"
-license = "MIT"
-license-files = ["LICENSE"]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Wayne Chen" }]
 keywords = ["claude", "claude-code", "mcp", "model-context-protocol", "anthropic", "vertex-ai", "bedrock", "provisioning"]
 classifiers = [
