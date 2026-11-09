@@ -991,6 +991,12 @@ class CandidateVerifier:
         self._align_slots_to_source(candidate)
         shake = self._trial_stdio(candidate, trial)
         shake = self._retry_slow_start(candidate, shake, trial)
+        if (
+            shake.standin_unchanged
+            and not shake.config_isolated
+            and not any(name and name in (shake.error or "") for name in shake.credential_pending)
+        ):
+            shake.credential_pending = []
         if trial.get("launch") is not None:
             self.check_in_use(candidate, shake, trial)
             self._anonymous_check(candidate, shake, trial)
@@ -2971,7 +2977,6 @@ class CandidateVerifier:
             # credential wall: it
             # refuses to start whatever credential it is given. Telling the
             # operator to export OSC_MCP_PASSWORD would have changed nothing.
-            shake.credential_pending = []
             shake.credential_test = (
                 f"with {', '.join(sorted(pending))} set to a stand-in value it failed exactly the same way, "
                 "so it refuses to start whatever credential it is given -- the credential is not "
@@ -3061,7 +3066,7 @@ class CandidateVerifier:
             )
         if (
             not shake.ok
-            and not shake.credential_pending
+            and (not shake.credential_pending or shake.standin_unchanged)
             and not trial.get("isolated")
             and not self.looks_transient(shake, timeout)
         ):
