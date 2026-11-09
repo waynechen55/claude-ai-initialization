@@ -194,10 +194,8 @@ def obs(ctx, tmp_path):
     ctx.dry_run = False
     ctx.runner.which = lambda name, **_: name  # type: ignore[assignment]
     ctx.settings.set("mcp.packages.trial_timeout_seconds", 20)
-    ctx.secrets.resolve = (
-        lambda reference, **_: Secret(TOKEN)
-        if reference.startswith("env:") and reference.endswith("OBS_PASSWORD")
-        else None
+    ctx.secrets.resolve = lambda reference, **_: (
+        Secret(TOKEN) if reference.startswith("env:") and reference.endswith("OBS_PASSWORD") else None
     )  # type: ignore[assignment]
     candidate = Candidate(
         kind="stdio",

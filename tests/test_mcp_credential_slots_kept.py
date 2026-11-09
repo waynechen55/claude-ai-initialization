@@ -205,8 +205,9 @@ def test_a_cli_copy_is_replaced_only_once_the_file_carries_its_login(ctx, sandbo
     monkeypatch.setattr(
         ctx.runner,
         "run",
-        lambda argv, **kw: ran.append(list(argv))
-        or SimpleNamespace(ok=True, simulated=False, returncode=0, stdout="", stderr=""),
+        lambda argv, **kw: (
+            ran.append(list(argv)) or SimpleNamespace(ok=True, simulated=False, returncode=0, stdout="", stderr="")
+        ),
     )
     writer = McpWriter(ctx)
     writer.published = []

@@ -1276,8 +1276,10 @@ class TraditionalPipeline:
         self.retract_endpoints(
             silent,
             outcome,
-            lambda c: "it did not answer as an MCP endpoint when probed"
-            + (f" ({c.handshake.error})" if c.handshake and c.handshake.error else ""),
+            lambda c: (
+                "it did not answer as an MCP endpoint when probed"
+                + (f" ({c.handshake.error})" if c.handshake and c.handshake.error else "")
+            ),
         )
         self.absorb(outcome, stage, exhaustive)
         stage.findings["due_diligence"] = record.to_dict()

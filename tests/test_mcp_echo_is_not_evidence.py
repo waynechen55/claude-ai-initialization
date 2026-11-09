@@ -118,16 +118,16 @@ def test_the_real_answers_are_still_recognised(settings) -> None:
         {"version": "5.12", "platformVersion": "9.12", "_links": {"self": "https://x.example.test" + INFO}}
     )
     fake = Fake(
-        lambda url: (200, info, "application/json;charset=UTF-8")
-        if url.endswith(INFO)
-        else (404, "", "application/xml")
+        lambda url: (
+            (200, info, "application/json;charset=UTF-8") if url.endswith(INFO) else (404, "", "application/xml")
+        )
     )
     assert detect(settings, "jira_service_management", fake).endswith(INFO)
 
     fake = Fake(
-        lambda url: (200, json.dumps(SCHEMA), "application/json")
-        if url.endswith("/graphql/")
-        else (404, "", "text/html")
+        lambda url: (
+            (200, json.dumps(SCHEMA), "application/json") if url.endswith("/graphql/") else (404, "", "text/html")
+        )
     )
     assert detect(settings, "graphql", fake).endswith("/graphql/")
 

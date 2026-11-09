@@ -964,8 +964,9 @@ def test_a_cli_copy_missing_a_slot_is_replaced_by_the_files_entry(ctx, sandbox, 
     monkeypatch.setattr(
         ctx.runner,
         "run",
-        lambda argv, **kw: ran.append(list(argv))
-        or SimpleNamespace(ok=True, simulated=False, returncode=0, stdout="", stderr=""),
+        lambda argv, **kw: (
+            ran.append(list(argv)) or SimpleNamespace(ok=True, simulated=False, returncode=0, stdout="", stderr="")
+        ),
     )
     rows = McpWriter(ctx).verify_written({"build-example-test"})
     assert any(a[:3] == ["/usr/bin/claude", "mcp", "remove"] for a in ran)

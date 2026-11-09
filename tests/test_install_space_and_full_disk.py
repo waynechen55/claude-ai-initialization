@@ -317,9 +317,11 @@ def test_a_failed_reinstall_that_broke_the_tool_puts_a_runnable_copy_back(ctx, m
     monkeypatch.setattr(
         phase,
         "_verify",
-        lambda component, verifier: good
-        if (sdk / "bin" / "gcloud").exists()
-        else [CheckResult(kind="binary", ok=False, path="", detail="gcloud not found")],
+        lambda component, verifier: (
+            good
+            if (sdk / "bin" / "gcloud").exists()
+            else [CheckResult(kind="binary", ok=False, path="", detail="gcloud not found")]
+        ),
     )
     monkeypatch.setattr(phase, "_tool_runs", lambda path: Path(path).is_file())
     status, detail, _ = phase._process(_gcloud(sdk), None, Installer(ctx), PhaseResult(phase="install"))

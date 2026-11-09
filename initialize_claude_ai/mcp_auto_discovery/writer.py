@@ -1587,8 +1587,11 @@ class McpWriter:
         # A variable the login session sets is passed under its own name and
         # nothing else -- also when an earlier entry renamed it, pinned this
         # host's value, or listed it as a credential (see SESSION_VARIABLES).
+        # A scope proven to isolate this server from the operator's config is
+        # the exception: replacing its path with ${HOME} would undo that proof.
+        isolated_config = set(candidate.handshake.config_isolated) if candidate.handshake else set()
         for key in [*candidate.env, *candidate.secret_env]:
-            if self.env_contract.session(key):
+            if self.env_contract.session(key) and key not in isolated_config:
                 env[key] = OPTIONAL_PLACEHOLDER.format(name=key)
         if candidate.kind == "stdio":
             command = [self.portable(token, roots) for token in candidate.full_command()]

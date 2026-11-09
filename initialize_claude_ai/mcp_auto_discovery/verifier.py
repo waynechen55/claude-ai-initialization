@@ -2410,9 +2410,11 @@ class CandidateVerifier:
                     # Only the parts are exported: built at start-up (McpWriter._compose_launch).
                     candidate.held_names[slot] = "COMPOSE:" + re.sub(
                         r"\{([A-Z_]+)\}",
-                        lambda m: "{b64:%s:%s}" % (names["USERNAME"], names["PASSWORD"])
-                        if m.group(1) == "ENCODED"
-                        else "{" + names.get(m.group(1), m.group(1)) + "}",
+                        lambda m: (
+                            "{b64:%s:%s}" % (names["USERNAME"], names["PASSWORD"])
+                            if m.group(1) == "ENCODED"
+                            else "{" + names.get(m.group(1), m.group(1)) + "}"
+                        ),
                         template,
                     )
         if same:
@@ -3133,7 +3135,7 @@ class CandidateVerifier:
         )
         inner: dict[str, Any] = {"isolated": True}
         second = self._trial_stdio(candidate, inner)
-        if not (second.ok or second.credential_pending):
+        if not (second.ok or (second.credential_pending and not self.same_failure(first, second))):
             candidate.env.clear()
             candidate.env.update(saved)
             first.add_hint(
