@@ -90,11 +90,31 @@ def fake(tmp_path, *, home: Path | None = None) -> Candidate:
     return candidate
 
 
+def fake_probe(command, **kwargs) -> Handshake:
+    env = kwargs.get("env", {})
+    home = Path(env.get("HOME", ""))
+    rc = home / ".fakerc"
+    api = rc.read_text().strip() if rc.is_file() else env.get("FAKE_API", "")
+    if "forbidden" in api:
+        return Handshake(
+            transport=Transport.STDIO,
+            error=f'process exited with rc=1: level=ERROR msg="failed to get credentials" error="refusing {api}"',
+        )
+    if not env.get("FAKE_PASSWORD"):
+        return Handshake(
+            transport=Transport.STDIO,
+            error='process exited with rc=1: level=ERROR msg="failed to get credentials" error="FAKE_PASSWORD not set"',
+        )
+    return Handshake(transport=Transport.STDIO, ok=True, tools=["list_requests"], round_trip=True)
+
+
 # -- the operator's configuration ---------------------------------------------------------
 
 
-def test_a_server_broken_by_the_operator_s_configuration_gets_a_scope_of_its_own(live, tmp_path) -> None:
-    candidate = CandidateVerifier(live).verify(fake(tmp_path, home=tmp_path / "operator-home"))
+def test_a_server_broken_by_the_operator_s_configuration_gets_a_scope_of_its_own(live, tmp_path, monkeypatch) -> None:
+    verifier = CandidateVerifier(live)
+    monkeypatch.setattr(verifier.prober, "probe_stdio", fake_probe)
+    candidate = verifier.verify(fake(tmp_path, home=tmp_path / "operator-home"))
     shake = candidate.handshake
 
     assert shake.credential_pending == ["FAKE_PASSWORD"], "with its own scope it asks for its credential"
@@ -104,28 +124,34 @@ def test_a_server_broken_by_the_operator_s_configuration_gets_a_scope_of_its_own
     assert str(tmp_path / "isolated") in candidate.env["HOME"], "the candidate keeps the scope"
 
 
-def test_the_entry_carries_the_scope_relocatably(live, tmp_path) -> None:
+def test_the_entry_carries_the_scope_relocatably(live, tmp_path, monkeypatch) -> None:
     from initialize_claude_ai.mcp_auto_discovery.writer import McpWriter
 
+    verifier = CandidateVerifier(live)
+    monkeypatch.setattr(verifier.prober, "probe_stdio", fake_probe)
     live.settings.set("mcp.registration.path_variables", {"ICA_TEST_ROOT": str(tmp_path / "isolated")})
-    candidate = CandidateVerifier(live).verify(fake(tmp_path, home=tmp_path / "operator-home"))
+    candidate = verifier.verify(fake(tmp_path, home=tmp_path / "operator-home"))
     entry = McpWriter(live).entry_for(candidate, "build-example-org")
     assert entry["env"]["HOME"].startswith("${ICA_TEST_ROOT:-"), entry["env"]["HOME"]
 
 
-def test_isolation_can_be_turned_off(live, tmp_path) -> None:
+def test_isolation_can_be_turned_off(live, tmp_path, monkeypatch) -> None:
     live.settings.set("mcp.healing.isolation.enabled", False)
-    candidate = CandidateVerifier(live).verify(fake(tmp_path, home=tmp_path / "operator-home"))
+    verifier = CandidateVerifier(live)
+    monkeypatch.setattr(verifier.prober, "probe_stdio", fake_probe)
+    candidate = verifier.verify(fake(tmp_path, home=tmp_path / "operator-home"))
     assert not candidate.handshake.config_isolated
     assert not candidate.needs_credential
 
 
-def test_a_failure_the_isolation_does_not_change_is_left_as_it_was(live, tmp_path) -> None:
+def test_a_failure_the_isolation_does_not_change_is_left_as_it_was(live, tmp_path, monkeypatch) -> None:
     home = tmp_path / "operator-home"
     candidate = fake(tmp_path, home=home)
     candidate.env["FAKE_API"] = "https://api.forbidden.example"  # the entry itself is the problem
     (home / ".fakerc").unlink()
-    candidate = CandidateVerifier(live).verify(candidate)
+    verifier = CandidateVerifier(live)
+    monkeypatch.setattr(verifier.prober, "probe_stdio", fake_probe)
+    candidate = verifier.verify(candidate)
     assert not candidate.handshake.config_isolated
     assert candidate.env["HOME"] == str(home), "nothing is kept that did not help"
 
@@ -133,12 +159,21 @@ def test_a_failure_the_isolation_does_not_change_is_left_as_it_was(live, tmp_pat
 # -- a credential wall needs evidence -------------------------------------------------------
 
 
-def test_the_same_failure_with_a_stand_in_is_not_a_credential_wall(live, tmp_path) -> None:
+def test_the_same_failure_with_a_stand_in_is_not_a_credential_wall(live, tmp_path, monkeypatch) -> None:
     live.settings.set("mcp.healing.isolation.enabled", False)
+    verifier = CandidateVerifier(live)
+    error = (
+        "process exited with rc=1: time=2026-11-09T12:00:00 level=ERROR "
+        'msg="failed to get credentials" error="refusing https://api.forbidden.example"'
+    )
+    monkeypatch.setattr(
+        verifier.prober,
+        "probe_stdio",
+        lambda *args, **kwargs: Handshake(transport=Transport.STDIO, error=error),
+    )
     candidate = fake(tmp_path, home=tmp_path / "operator-home")
     candidate.env["FAKE_API"] = "https://api.forbidden.example"
-    (tmp_path / "operator-home" / ".fakerc").unlink()
-    candidate = CandidateVerifier(live).verify(candidate)
+    candidate = verifier.verify(candidate)
     shake = candidate.handshake
     assert not shake.credential_pending, (
         "words alone are not evidence when the stand-in changed nothing; "
