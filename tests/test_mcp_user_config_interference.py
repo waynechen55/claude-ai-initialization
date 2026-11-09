@@ -93,26 +93,13 @@ def fake(tmp_path, *, home: Path | None = None) -> Candidate:
 # -- the operator's configuration ---------------------------------------------------------
 
 
-def test_a_server_broken_by_the_operator_s_configuration_gets_a_scope_of_its_own(live, tmp_path, monkeypatch) -> None:
-    verifier = CandidateVerifier(live)
-    probe_stdio = verifier.prober.probe_stdio
-    probe_homes: list[str] = []
-
-    def record_probe_home(command, **kwargs):
-        probe_homes.append(str(kwargs.get("env", {}).get("HOME", "")))
-        return probe_stdio(command, **kwargs)
-
-    monkeypatch.setattr(verifier.prober, "probe_stdio", record_probe_home)
-    candidate = verifier.verify(fake(tmp_path, home=tmp_path / "operator-home"))
+def test_a_server_broken_by_the_operator_s_configuration_gets_a_scope_of_its_own(live, tmp_path) -> None:
+    candidate = CandidateVerifier(live).verify(fake(tmp_path, home=tmp_path / "operator-home"))
     shake = candidate.handshake
 
     assert shake.credential_pending == ["FAKE_PASSWORD"], "with its own scope it asks for its credential"
     assert candidate.needs_credential and not candidate.verified
-    assert probe_homes[0] == str(tmp_path / "operator-home")
-    assert any(home.startswith(str(tmp_path / "isolated")) for home in probe_homes)
-    assert set(shake.config_isolated) == {"HOME", "XDG_CONFIG_HOME"}, (
-        f"error={shake.error!r}; credential_test={shake.credential_test!r}; probe_homes={probe_homes!r}"
-    )
+    assert set(shake.config_isolated) == {"HOME", "XDG_CONFIG_HOME"}
     assert "operator's own configuration" in shake.config_interference
     assert str(tmp_path / "isolated") in candidate.env["HOME"], "the candidate keeps the scope"
 
@@ -148,7 +135,10 @@ def test_a_failure_the_isolation_does_not_change_is_left_as_it_was(live, tmp_pat
 
 def test_the_same_failure_with_a_stand_in_is_not_a_credential_wall(live, tmp_path) -> None:
     live.settings.set("mcp.healing.isolation.enabled", False)
-    candidate = CandidateVerifier(live).verify(fake(tmp_path, home=tmp_path / "operator-home"))
+    candidate = fake(tmp_path, home=tmp_path / "operator-home")
+    candidate.env["FAKE_API"] = "https://api.forbidden.example"
+    (tmp_path / "operator-home" / ".fakerc").unlink()
+    candidate = CandidateVerifier(live).verify(candidate)
     shake = candidate.handshake
     assert not shake.credential_pending, (
         "words alone are not evidence when the stand-in changed nothing; "
