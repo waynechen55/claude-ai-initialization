@@ -2971,6 +2971,7 @@ class CandidateVerifier:
             # credential wall: it
             # refuses to start whatever credential it is given. Telling the
             # operator to export OSC_MCP_PASSWORD would have changed nothing.
+            shake.credential_pending = []
             shake.credential_test = (
                 f"with {', '.join(sorted(pending))} set to a stand-in value it failed exactly the same way, "
                 "so it refuses to start whatever credential it is given -- the credential is not "
