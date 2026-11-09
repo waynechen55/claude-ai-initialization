@@ -2738,6 +2738,10 @@ class CandidateVerifier:
             )
 
         env = {k: v for k, v in candidate.env.items() if v}
+        if "HOME" not in env:
+            home = self.ctx.runner.base_env.get("HOME") or os.environ.get("HOME")
+            if home:
+                env["HOME"] = home
         # ${NAME} inside a setting is expanded the way Claude Code will expand
         # it -- EXTRA_HEADERS = "Authorization: Basic ${VAR}" -- in memory, as a
         # secret; a reference nothing resolves leaves the server waiting for it.
