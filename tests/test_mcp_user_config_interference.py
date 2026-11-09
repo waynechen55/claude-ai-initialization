@@ -134,12 +134,12 @@ def test_isolation_can_be_turned_off(live, tmp_path) -> None:
 
 
 def test_a_failure_the_isolation_does_not_change_is_left_as_it_was(live, tmp_path) -> None:
-    candidate = fake(tmp_path)
+    home = tmp_path / "operator-home"
+    candidate = fake(tmp_path, home=home)
     candidate.env["FAKE_API"] = "https://api.forbidden.example"  # the entry itself is the problem
-    (tmp_path / "operator-home" / ".fakerc").unlink()
     candidate = CandidateVerifier(live).verify(candidate)
     assert not candidate.handshake.config_isolated
-    assert "HOME" not in candidate.env, "nothing is kept that did not help"
+    assert candidate.env["HOME"] == str(home), "nothing is kept that did not help"
 
 
 # -- a credential wall needs evidence -------------------------------------------------------
