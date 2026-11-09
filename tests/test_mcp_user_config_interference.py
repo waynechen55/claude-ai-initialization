@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -72,15 +73,18 @@ def live(ctx, tmp_path, monkeypatch):
     return ctx
 
 
-def fake(tmp_path) -> Candidate:
+def fake(tmp_path, *, home: Path | None = None) -> Candidate:
     script = tmp_path / "server.py"
     script.write_text(SERVER)
+    env = {"FAKE_API": "https://api.example.org"}
+    if home is not None:
+        env["HOME"] = str(home)
     candidate = Candidate(
         kind="stdio",
         name="build-example-org",
         transport=Transport.STDIO,
         command=[sys.executable, str(script)],
-        env={"FAKE_API": "https://api.example.org"},
+        env=env,
     )
     candidate.secret_env = {"FAKE_PASSWORD": "env:FAKE_PASSWORD"}
     return candidate
@@ -89,13 +93,26 @@ def fake(tmp_path) -> Candidate:
 # -- the operator's configuration ---------------------------------------------------------
 
 
-def test_a_server_broken_by_the_operator_s_configuration_gets_a_scope_of_its_own(live, tmp_path) -> None:
-    candidate = CandidateVerifier(live).verify(fake(tmp_path))
+def test_a_server_broken_by_the_operator_s_configuration_gets_a_scope_of_its_own(live, tmp_path, monkeypatch) -> None:
+    verifier = CandidateVerifier(live)
+    probe_stdio = verifier.prober.probe_stdio
+    probe_homes: list[str] = []
+
+    def record_probe_home(command, **kwargs):
+        probe_homes.append(str(kwargs.get("env", {}).get("HOME", "")))
+        return probe_stdio(command, **kwargs)
+
+    monkeypatch.setattr(verifier.prober, "probe_stdio", record_probe_home)
+    candidate = verifier.verify(fake(tmp_path, home=tmp_path / "operator-home"))
     shake = candidate.handshake
 
     assert shake.credential_pending == ["FAKE_PASSWORD"], "with its own scope it asks for its credential"
     assert candidate.needs_credential and not candidate.verified
-    assert set(shake.config_isolated) == {"HOME", "XDG_CONFIG_HOME"}
+    assert probe_homes[0] == str(tmp_path / "operator-home")
+    assert any(home.startswith(str(tmp_path / "isolated")) for home in probe_homes)
+    assert set(shake.config_isolated) == {"HOME", "XDG_CONFIG_HOME"}, (
+        f"error={shake.error!r}; credential_test={shake.credential_test!r}; probe_homes={probe_homes!r}"
+    )
     assert "operator's own configuration" in shake.config_interference
     assert str(tmp_path / "isolated") in candidate.env["HOME"], "the candidate keeps the scope"
 
@@ -104,14 +121,14 @@ def test_the_entry_carries_the_scope_relocatably(live, tmp_path) -> None:
     from initialize_claude_ai.mcp_auto_discovery.writer import McpWriter
 
     live.settings.set("mcp.registration.path_variables", {"ICA_TEST_ROOT": str(tmp_path / "isolated")})
-    candidate = CandidateVerifier(live).verify(fake(tmp_path))
+    candidate = CandidateVerifier(live).verify(fake(tmp_path, home=tmp_path / "operator-home"))
     entry = McpWriter(live).entry_for(candidate, "build-example-org")
     assert entry["env"]["HOME"].startswith("${ICA_TEST_ROOT:-"), entry["env"]["HOME"]
 
 
 def test_isolation_can_be_turned_off(live, tmp_path) -> None:
     live.settings.set("mcp.healing.isolation.enabled", False)
-    candidate = CandidateVerifier(live).verify(fake(tmp_path))
+    candidate = CandidateVerifier(live).verify(fake(tmp_path, home=tmp_path / "operator-home"))
     assert not candidate.handshake.config_isolated
     assert not candidate.needs_credential
 
@@ -130,9 +147,12 @@ def test_a_failure_the_isolation_does_not_change_is_left_as_it_was(live, tmp_pat
 
 def test_the_same_failure_with_a_stand_in_is_not_a_credential_wall(live, tmp_path) -> None:
     live.settings.set("mcp.healing.isolation.enabled", False)
-    candidate = CandidateVerifier(live).verify(fake(tmp_path))
+    candidate = CandidateVerifier(live).verify(fake(tmp_path, home=tmp_path / "operator-home"))
     shake = candidate.handshake
-    assert not shake.credential_pending, "words alone are not evidence when the stand-in changed nothing"
+    assert not shake.credential_pending, (
+        "words alone are not evidence when the stand-in changed nothing; "
+        f"error={shake.error!r}; credential_test={shake.credential_test!r}"
+    )
     assert "whatever credential it is given" in shake.credential_test
 
 
