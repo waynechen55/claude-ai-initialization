@@ -137,6 +137,7 @@ def test_a_failure_the_isolation_does_not_change_is_left_as_it_was(live, tmp_pat
     home = tmp_path / "operator-home"
     candidate = fake(tmp_path, home=home)
     candidate.env["FAKE_API"] = "https://api.forbidden.example"  # the entry itself is the problem
+    (home / ".fakerc").unlink()
     candidate = CandidateVerifier(live).verify(candidate)
     assert not candidate.handshake.config_isolated
     assert candidate.env["HOME"] == str(home), "nothing is kept that did not help"
