@@ -66,6 +66,7 @@ def live(ctx, tmp_path, monkeypatch):
     operator.mkdir()
     (operator / ".fakerc").write_text("https://api.forbidden.example\n")
     monkeypatch.setenv("HOME", str(operator))
+    ctx.runner.base_env["HOME"] = str(operator)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.delenv("FAKE_PASSWORD", raising=False)
     return ctx
