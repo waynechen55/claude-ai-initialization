@@ -236,6 +236,10 @@ class Handshake:
     #: ``{variable: form}`` proved by trying an address in other forms
     #: (``[mcp.verification.address_forms]``); empty when nothing was changed.
     address_forms: dict[str, str] = field(default_factory=dict)
+    #: ``{variable: value}`` proved by trying the form of the *request* -- an
+    #: Accept header a gateway rejected for a logged-in call
+    #: (``[mcp.verification.request_forms]``); empty when nothing was changed.
+    request_forms: dict[str, str] = field(default_factory=dict)
     #: Values that do not fit their slot (``[mcp.discovery.auth.value_shapes]``):
     #: ``{name, remedy}`` -- names and the shape they lack, never the value.
     shape_problems: list[dict[str, str]] = field(default_factory=list)
@@ -378,6 +382,7 @@ class Handshake:
             "contract": [dict(row) for row in self.contract],
             "contract_skipped": [dict(row) for row in self.contract_skipped],
             "address_forms": dict(self.address_forms),
+            "request_forms": dict(self.request_forms),
             "shape_problems": [dict(row) for row in self.shape_problems],
             "resources": self.resources[:50],
             "prompts": self.prompts[:50],

@@ -166,7 +166,13 @@ DEFAULT_IDENTITY_PATTERNS = (
 )
 #: A failure answered as a web page is the gateway in front of the API talking,
 #: not the API (an XML or JSON API never answers in HTML).
-DEFAULT_GATEWAY_PAGE_PATTERNS = (r"<!doctype html", r"<html[\s>]")
+DEFAULT_GATEWAY_PAGE_PATTERNS = (r"<!doctype html", r"<html[\s>]", r"\ban html page\b", r"not the api'?s (own )?form")
+#: How :func:`judge` says a failure was a gateway's web page -- matched by
+#: :func:`account_missing` and :func:`request_form_rejected`, so the wording
+#: and the rules that read it cannot drift apart.
+GATEWAY_PAGE_WORDS = "as a web page, not in the API's own form"
+#: Fallbacks for ``[mcp.verification.request_forms]``, equal to the packaged values.
+DEFAULT_REQUEST_FORM_STATUSES = (404, 406, 415)
 #: Fewest calls that must all fail before a server counts as not working.
 DEFAULT_FAILED_CALLS_MIN = 2
 #: Fallbacks for ``status_outranks_wording``/``status_verdicts``/``status_pattern``.
@@ -684,6 +690,17 @@ def judge(reply: Mapping[str, Any] | None, settings: Any) -> tuple[str, str]:
             # no account is an anonymous answer, never a login accepted.
             return EMPTY, f"answered as nobody -- no account behind the call ({nobody})"
         return ACCEPTED, ""
+    leading = _leading_status(text)
+    if leading and leading in _request_form_statuses(settings) and is_gateway_page(text, settings):
+        # A gateway's web page that leads with 404/406/415: that status is the
+        # answer, whatever words surround it. build.opensuse.org's bridge
+        # explained its 404 page with "... refused with 401 ..." and the
+        # refusal markers fired on the explanation -- the login was blamed for
+        # a request the gateway rejected (see request_form_rejected).
+        return UNCHECKED, (
+            f"the call failed for another reason: answered HTTP {leading} {GATEWAY_PAGE_WORDS} "
+            "-- the gateway in front of it, not the API"
+        )
     stated = stated_status_verdict(text, settings)
     if stated:
         # The status the server stated outranks a client's wording of it:
@@ -707,7 +724,7 @@ def judge(reply: Mapping[str, Any] | None, settings: Any) -> tuple[str, str]:
         status = re.search(r"\b([1-5]\d\d)\b", text)
         return UNCHECKED, (
             f"the call failed for another reason: answered {('HTTP ' + status.group(1)) if status else 'a failure'} "
-            "as a web page, not in the API's own form -- the gateway in front of it, not the API"
+            f"{GATEWAY_PAGE_WORDS} -- the gateway in front of it, not the API"
         )
     return UNCHECKED, f"the call failed for another reason: {detail or 'no message'}"
 
@@ -793,8 +810,53 @@ def account_missing(tool: str, verdict: str, detail: str, settings: Any) -> bool
     """
     if verdict != UNCHECKED or not re.search(r"\b404\b", detail or ""):
         return False
+    if GATEWAY_PAGE_WORDS in (detail or "") or is_gateway_page(detail or "", settings):
+        # A web page is the gateway's answer, not the API's: the same 404 came
+        # back for an account that exists when the request's *form* was
+        # rejected (a multi-value Accept header). Not an account verdict --
+        # request_form_rejected() names it, and the request forms are tried.
+        return False
     patterns = settings.str_list("mcp.verification.login_check.identity_tool_patterns", list(DEFAULT_IDENTITY_PATTERNS))
     return any(_search(p, tool or "") for p in patterns)
+
+
+def _leading_status(text: str) -> str:
+    """The HTTP status a failure leads with -- the first one on its first line; "" when it states none."""
+    first = next((line.strip() for line in (text or "").splitlines() if line.strip()), "")
+    found = re.search(r"\b([1-5]\d\d)\b", first)
+    return found.group(1) if found else ""
+
+
+def _request_form_statuses(settings: Any) -> set[str]:
+    statuses = (
+        settings.list_("mcp.verification.request_forms.statuses", list(DEFAULT_REQUEST_FORM_STATUSES))
+        if settings is not None
+        else DEFAULT_REQUEST_FORM_STATUSES
+    )
+    return {str(s) for s in statuses}
+
+
+def request_form_rejected(rows: Sequence[Mapping[str, Any]], settings: Any) -> str:
+    """The first call whose *request* the gateway rejected, as ``"tool: detail"``; "" when none was.
+
+    A call answered with a gateway's web page and one of
+    ``[mcp.verification.request_forms] statuses`` (404/406/415) proved nothing
+    about the credential or the account: build.opensuse.org's bridge got that
+    page for every logged-in call because of its Accept header, and the data
+    with ``Accept: */*``. Only rows the login check judged inconclusive
+    count -- a refusal or an acceptance already said something.
+    """
+    wanted = _request_form_statuses(settings)
+    for row in rows or []:
+        detail = str(row.get("detail") or "")
+        if row.get("verdict") != UNCHECKED:
+            continue
+        if not (GATEWAY_PAGE_WORDS in detail or (settings is not None and is_gateway_page(detail, settings))):
+            continue
+        found = {code for code in re.findall(r"\b([1-5]\d\d)\b", detail)}
+        if found & wanted:
+            return f"{row.get('tool') or 'a call'}: {detail[:160]}"
+    return ""
 
 
 def same_answer(one: str, other: str) -> bool:

@@ -49,6 +49,12 @@ from .types import Candidate, Stage, Transport, slugify
 
 log = get_logger("mcp.bridge")
 
+#: Fallbacks for ``[mcp.bridge.generated] accept``/``accept_retry_statuses``/
+#: ``accept_fallbacks``, equal to the packaged values (see 40-mcp.toml).
+DEFAULT_ACCEPT = "*/*"
+DEFAULT_ACCEPT_RETRY = (404, 406, 415)
+DEFAULT_ACCEPT_FALLBACKS = ("*/*",)
+
 #: Environment variables the generated bridge reads. Names only; the operator
 #: supplies the values, so no credential is ever written to disk by initialize-claude-ai.
 ENV_BASE_URL = "MCP_BRIDGE_BASE_URL"
@@ -163,11 +169,17 @@ class BridgeBuilder:
             "schema": MANIFEST_SCHEMA,
             "script": filename,
             "base_url": operations["base_url"],
-            # Sent where an operation's own description names no media type.
-            # From configuration, never assumed: an API that serves only XML
-            # answers "Accept: application/json" with 406 -- every OBS call
-            # through build.example.net's bridge did.
-            "accept": self.generated.str_("accept", "application/json, application/xml;q=0.9, */*;q=0.8"),
+            # Sent where an operation's own description names no single media
+            # type. One value from configuration, never a weighted list: OBS
+            # answered a logged-in request with a multi-value Accept with its
+            # HTML 404 page, and "Accept: application/json" alone once with 406.
+            "accept": self.generated.str_("accept", DEFAULT_ACCEPT),
+            # A read-only call answered with one of these statuses is asked once
+            # more with each fallback it has not sent (Bridge.call).
+            "accept_retry": {
+                "statuses": [int(s) for s in self.generated.list_("accept_retry_statuses", list(DEFAULT_ACCEPT_RETRY))],
+                "values": self.generated.str_list("accept_fallbacks", list(DEFAULT_ACCEPT_FALLBACKS)),
+            },
             # The protocol revisions the bridge may answer in, newest first --
             # the ones this program's own prober speaks (mcp.protocol.versions).
             # A bridge serves tools only, which every revision has, so it echoes
@@ -559,10 +571,13 @@ class BridgeBuilder:
                     break
                 name = _tool_name(operation, method, str(path))
                 params = self._client_safe(shared + _parameters(operation.get("parameters")))
+                # One documented type is asked for exactly; several (or none)
+                # leave the manifest's single value -- joining them made the
+                # weighted list a gateway rejected.
                 accept = _media_types(operation, spec)
                 tools.append(
                     {
-                        **({"accept": ", ".join(accept)} if accept else {}),
+                        **({"accept": accept[0]} if len(accept) == 1 else {}),
                         "name": name,
                         "description": str(
                             operation.get("summary") or operation.get("description") or f"{method.upper()} {path}"
@@ -920,11 +935,12 @@ class Bridge:
             self.ssl_context.verify_flags |= getattr(ssl, "VERIFY_X509_PARTIAL_CHAIN", 0)
 
     def headers(self, tool: dict | None = None) -> dict:
-        # What the operation documented, then the operator's choice, then the
-        # manifest's, then anything. Asking for JSON alone got 406 from an API
-        # that serves only XML.
+        # A value this session proved, then what the operation documented,
+        # then the operator's choice, then the manifest's, then anything.
+        # Asking for JSON alone got 406 from an API that serves only XML.
         accept = (
-            (tool or {}).get("accept")
+            getattr(self, "learned_accept", "")
+            or (tool or {}).get("accept")
             or os.environ.get("MCP_BRIDGE_ACCEPT", "").strip()
             or self.manifest.get("accept")
             or "*/*"
@@ -1044,22 +1060,49 @@ class Bridge:
             url += ("&" if "?" in url else "?") + urllib.parse.urlencode(query)
 
         data = json.dumps(body).encode("utf-8") if body else None
-        request = urllib.request.Request(url, data=data, method=tool.get("method", "GET"))
-        for key, value in headers.items():
-            request.add_header(key, value)
-        if data is not None:
-            request.add_header("content-type", "application/json")
-        try:
-            with urllib.request.urlopen(
-                request, timeout=self.timeout, context=self.ssl_context
-            ) as response:
-                body = response.read(1_000_000).decode("utf-8", "replace")
-                return {"content": [{"type": "text", "text": body}]}
-        except urllib.error.HTTPError as exc:
-            detail = exc.read(4096).decode("utf-8", "replace")
-            return _error("HTTP " + str(exc.code) + ": " + detail + self.unset_hint(exc.code))
-        except Exception as exc:  # noqa: BLE001
-            return _error(str(exc))
+        # The request's form is retried, never its effect: only a read-only
+        # call is asked again, with each fallback Accept not sent yet, after a
+        # status saying the request was rejected (manifest "accept_retry").
+        # OBS answered a logged-in request with a multi-value Accept with its
+        # HTML 404 page and the same request with "Accept: */*" with the data.
+        retry = self.manifest.get("accept_retry") or {}
+        statuses = {int(s) for s in retry.get("statuses", [404, 406, 415])}
+        accepts = [headers.get("accept", "*/*")]
+        method = tool.get("method", "GET")
+        if tool.get("read_only", method in ("GET", "HEAD", "OPTIONS")):
+            accepts += [v for v in retry.get("values", ["*/*"]) if v and v not in accepts]
+        first = None
+        for index, accept in enumerate(accepts):
+            request = urllib.request.Request(url, data=data, method=method)
+            for key, value in headers.items():
+                request.add_header(key, value)
+            request.add_header("accept", accept)
+            if data is not None:
+                request.add_header("content-type", "application/json")
+            try:
+                with urllib.request.urlopen(
+                    request, timeout=self.timeout, context=self.ssl_context
+                ) as response:
+                    body = response.read(1_000_000).decode("utf-8", "replace")
+                    if index:
+                        # Kept for the session; said where an operator looks.
+                        self.learned_accept = accept
+                        sys.stderr.write(
+                            "%s: HTTP %s with Accept %r; %r works -- set MCP_BRIDGE_ACCEPT to keep it%s"
+                            % (SERVER_NAME, first[0], accepts[0], accept, chr(10))
+                        )
+                    return {"content": [{"type": "text", "text": body}]}
+            except urllib.error.HTTPError as exc:
+                detail = exc.read(4096).decode("utf-8", "replace")
+                if first is None:
+                    first = (exc.code, "HTTP " + str(exc.code) + ": " + detail + self.unset_hint(exc.code))
+                if exc.code in statuses and index + 1 < len(accepts):
+                    continue
+                tried = "" if not index else " (also asked with Accept %r: HTTP %s)" % (accept, exc.code)
+                return _error(first[1] + tried)
+            except Exception as exc:  # noqa: BLE001
+                return _error(str(exc))
+        return _error(first[1] if first else "no request was sent")
 
 
 def _error(message: str) -> dict:

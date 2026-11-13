@@ -12,6 +12,20 @@ detailed record of how the program reached 0.1.0 is in
 
 ## [Unreleased]
 
+### Fixed
+
+- A logged-in call answered by a gateway's web page (404/406/415) is no longer
+  read as a refused login or a missing account. The request's form is tried
+  first (`[mcp.verification.request_forms]`): each request-form variable the
+  launch reads -- `MCP_BRIDGE_ACCEPT` -- is varied, and the value under which
+  the login is accepted is written into the entry. A 404 means "no account"
+  only when the API itself says it.
+- Generated bridges send a single `Accept` value (`*/*`, or the one media type
+  an operation documents) instead of a weighted list, which Open Build
+  Service rejected for logged-in requests. A read-only call answered
+  404/406/415 is retried once with `*/*`, and the value that worked is kept
+  for the session (`accept_retry_statuses`, `accept_fallbacks`).
+
 ## [0.1.0] - 2026-11-04
 
 First public release, under the Apache License 2.0.

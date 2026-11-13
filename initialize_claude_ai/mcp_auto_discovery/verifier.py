@@ -1009,6 +1009,14 @@ class CandidateVerifier:
                     login_check.in_words(shake.login),
                     f" ({shake.login_reason})" if shake.login_reason else "",
                 )
+        if (
+            not trial.get("forms")
+            and shake.credential_sent
+            and login_check.request_form_rejected(shake.functional, self.ctx.settings)
+        ):
+            # Logged-in calls answered by the gateway's web page: the request's
+            # form is tried before the credential or the account is judged.
+            return self._prove_request_forms(candidate, shake, trial)
         if shake.misconfigured and not trial.get("forms"):
             return self._prove_address_forms(candidate, shake, trial)
         if shake.login in login_check.REFUSED and not trial.get("forms") and self._points_off_api_host(candidate):
@@ -1850,6 +1858,14 @@ class CandidateVerifier:
             return
         if shake.login not in login_check.UNPROVED:
             return
+        if not trial.get("request_forms_tried") and login_check.request_form_rejected(
+            shake.functional, self.ctx.settings
+        ):
+            # The same web page for every logged-in call came back for an
+            # account that exists, because of the request's Accept header.
+            # The forms are tried first (_prove_request_forms), which calls this
+            # again when none of them helps.
+            return
         code = login_check.uniform_failure(shake.functional)
         launch = trial.get("launch")
         if not code or not launch:
@@ -1937,6 +1953,82 @@ class CandidateVerifier:
                 return retried
             shake = retried
         shake.add_hint("it answered nothing within any deadline it was given; slow, and possibly not broken")
+        return shake
+
+    def _prove_request_forms(self, candidate: Candidate, shake: Handshake, trial: dict[str, Any]) -> Handshake:
+        """Try the form of the request a server sends; keep the first under which the login is accepted.
+
+        build.opensuse.org's bridge sent "Accept: application/xml, text/xml;q=0.9,
+        */*;q=0.1"; with the operator's login every call was answered by the
+        gateway's HTML 404 page, and the same calls with "Accept: */*" returned
+        the data. No credential and a made-up one got 401 either way, so the run
+        that wrote it, holding none, never saw it -- and the answer was read as
+        an account with nothing behind it.
+
+        Each variable of ``[mcp.verification.request_forms] variables`` the
+        launch reads is set, one at a time, to each of its values and the server
+        relaunched exactly as a trial, with the credential the first check had.
+        The first under which the login is accepted is kept in the entry and
+        reported; nothing is kept that did not help. When none helps, the
+        account comparison (:meth:`_account_check`) runs, as it would have.
+        """
+        config = self.verification.section("request_forms")
+        rejected = login_check.request_form_rejected(shake.functional, self.ctx.settings)
+        table = config.dict_("variables", {"MCP_BRIDGE_ACCEPT": ["*/*"]}) if config.bool_("enabled", True) else {}
+        budget = max(0, config.int_("max_variants", 4))
+        reads: set[str] = set()
+        if candidate.kind == "stdio" and table and self.ctx.settings.bool_("mcp.env_contract.enabled", True):
+            from .env_contract import EnvContract
+
+            try:
+                reads = {r.name for r in EnvContract(self.ctx.settings).reads_of(list(candidate.full_command()))}
+            except Exception:  # noqa: BLE001 - evidence only; never a reason to fail a trial
+                reads = set()
+        tried: list[str] = []
+        for key, values in table.items() if candidate.kind == "stdio" else []:
+            if key not in candidate.env and key not in reads:
+                continue  # a variable the launch never reads changes nothing
+            original = candidate.env.get(key)
+            for value in [values] if isinstance(values, str) else list(values or []):
+                value = str(value)
+                if budget <= 0 or not value or value == str(original or ""):
+                    continue
+                budget -= 1
+                candidate.env[key] = value
+                tried.append(f"{key}={value}")
+                inner: dict[str, Any] = {"forms": True, "isolated": trial.get("isolated", False)}
+                again = self._trial_stdio(candidate, inner)
+                if inner.get("launch") is not None:
+                    self.check_in_use(candidate, again, inner)
+                if again.login == login_check.ACCEPTED:
+                    again.request_forms = {key: value}
+                    note = (
+                        f"{key} is written as {value!r}: with {original or 'its default'!r} every logged-in call was "
+                        f"answered by the gateway's web page ({rejected[:120]}), and with this one the login was accepted"
+                    )
+                    again.add_hint(note)
+                    candidate.add_note(note)
+                    trial.update(inner)
+                    log.info("%s: %s", candidate.label, note)
+                    return again
+            if original is None:
+                candidate.env.pop(key, None)
+            else:
+                candidate.env[key] = original
+        note = (
+            f"every logged-in call was answered by the gateway's web page ({rejected[:120]}) -- the request's form, "
+            "not the credential, until shown otherwise; "
+            + (
+                f"tried {', '.join(tried)}, and none was accepted"
+                if tried
+                else "the launch reads none of "
+                + ", ".join(table or ["the request-form variables"])
+                + ", so no form could be tried"
+            )
+        )
+        shake.add_hint(note)
+        log.info("%s: %s", candidate.label, note)
+        self._account_check(candidate, shake, {**trial, "request_forms_tried": True})
         return shake
 
     def _prove_address_forms(

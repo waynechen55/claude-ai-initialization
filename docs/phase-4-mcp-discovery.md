@@ -853,18 +853,30 @@ What follows from the verdict:
   fingerprint, including the parts of a Basic credential
   (`mcp.registration.compare_credential_values`).
 
-**A login with nothing behind it is an account problem.** When every call
-fails alike with the credential, the calls are repeated with a stand-in. If
-the stand-in is refused or answered differently, the login was recognised and
-the service has no account behind it: *no API access*, with its own remedy
-(sign in once to the service's web interface, or ask its administrators;
-`mcp.verification.login_check.compare_with_standin`, `remedies.no_account`). A
-`404` from a tool that reads the account's own record means the same
-(`identity_tool_patterns`). A failure answered as a web page is the gateway's,
-not the API's (`gateway_page_patterns`). A server every call of which fails
-(at least `failed_calls_min` calls) is not working, however well it started
-(`failed_calls_unverify`). build.opensuse.org's login got an HTML 404 for every
-path while a made-up login got 401.
+**The request's form is tried before the account is blamed.** A failure
+answered as a web page is the gateway's, not the API's
+(`gateway_page_patterns`) -- and with a real login it may be the *request*
+the gateway rejects. build.opensuse.org's bridge sent `Accept:
+application/xml, text/xml;q=0.9, */*;q=0.1`: every logged-in call got the
+gateway's HTML 404 page, no login and a made-up one got 401, and the same calls
+with `Accept: */*` returned the data. The account was fine. So when a
+logged-in call is answered by a web page with one of
+`mcp.verification.request_forms.statuses` (404, 406, 415), each request-form
+variable the launch reads (`request_forms.variables`, `MCP_BRIDGE_ACCEPT` →
+`*/*`) is tried, one at a time, and the first under which the login is
+accepted is written into the entry and reported.
+
+**Only then is a login with nothing behind it an account problem.** When
+every call still fails alike with the credential, the calls are repeated with
+a stand-in. If the stand-in is refused or answered differently, the login was
+recognised and the service has no account behind it: *no API access*, with
+its own remedy (sign in once to the service's web interface, or ask its
+administrators; `mcp.verification.login_check.compare_with_standin`,
+`remedies.no_account`). A `404` *in the API's own form* from a tool that reads
+the account's own record means the same (`identity_tool_patterns`); a `404`
+web page never does. A server every call of which fails (at least
+`failed_calls_min` calls) is not working, however well it started
+(`failed_calls_unverify`).
 
 sd.example.com needed all of these. mcp-atlassian answered `[]` with a working
 token and with a dead one alike. In agent mode, the agent's own bridge (Basic
@@ -2340,7 +2352,7 @@ own dotted path as [Configuration](configuration.md#configuration) describes:
 | `mcp.trust.chain_command` | — | `openssl s_client …` | how the presented chain is read when this Python cannot read it itself; `{host}` and `{port}` are filled in |
 | `mcp.registration.tls_weakening_env` | `…__TLS_WEAKENING_ENV` | `NODE_TLS_REJECT_UNAUTHORIZED`, `PYTHONHTTPSVERIFY`, … | variables that switch certificate verification off. Never written into an entry: `.mcp.json` is copied between machines, and the remedy for a private CA is the trust store, not a flag |
 | `mcp.registration.tls_weakening_patterns` | `…__TLS_WEAKENING_PATTERNS` | `NO_VERIFY`, `SKIP_VERIFY`, `REJECT_UNAUTHORIZED`, `INSECURE` | the same, for names nobody has listed yet: any variable whose name contains one of these is treated as switching verification off |
-| `mcp.bridge.generated.accept` | `…__ACCEPT` | `application/json, application/xml;q=0.9, */*;q=0.8` | the Accept header a generated bridge sends for an operation whose API description names no media type; one that does is asked for exactly what it documents, and `MCP_BRIDGE_ACCEPT` overrides at launch. build.example.net's bridge asked for JSON alone and Open Build Service, which serves XML, answered every call with 406 |
+| `mcp.bridge.generated.accept` | `…__ACCEPT` | `*/*` | the single Accept value a generated bridge sends for an operation whose API description names no single media type (never a weighted list: OBS answered a logged-in multi-value Accept with its 404 page); one that names exactly one is asked for it, a read-only call answered 404/406/415 is retried once with `accept_fallbacks` (`accept_retry_statuses`), and `MCP_BRIDGE_ACCEPT` overrides at launch. build.example.net's bridge asked for JSON alone and Open Build Service, which serves XML, answered every call with 406 |
 | `mcp.bridge.generated.auth.from_spec`, `…probe_challenge` | — | `true`, `true` | where a generated bridge's authentication method comes from: the API description's security scheme, else the server's 401 challenge to a documented GET |
 | `mcp.bridge.generated.auth.variable_template` | — | `{SLUG}_{PART}` | the variable each part is exported under -- `BUILD_EXAMPLE_NET_USERNAME`; the bridge reads the same name |
 | `mcp.bridge.generated.auth.parts.<method>`, `…descriptions.<PART>` | — | basic → `USERNAME`, `PASSWORD`; bearer/token → `TOKEN`; apikey → `API_KEY` | a method's parts, and what each holds in words (`your user name on {host}`) |

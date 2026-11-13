@@ -155,8 +155,43 @@ def test_the_operations_documented_type_is_asked_for(tmp_path, xml_server) -> No
 
 
 def test_the_operator_can_override_it(tmp_path, xml_server) -> None:
+    """The operator's choice is what is sent first; a read-only call it gets refused (406) is asked once
+    more with the single fallback, so a wrong override costs one request, not the call (test_mcp_request_form)."""
     out = call_about(tmp_path, xml_server, env={"MCP_BRIDGE_ACCEPT": "application/json"})
-    assert "406" in out, "the operator's choice is what is sent"
+    assert "Open Build Service API" in out
+
+
+def test_without_a_fallback_the_operator_s_refused_choice_is_what_answers(tmp_path, xml_server) -> None:
+    """With no retry values in the manifest the operator's choice stands alone -- and its 406 is reported."""
+    from initialize_claude_ai.mcp_auto_discovery.bridge import MANIFEST_SCHEMA
+
+    script = tmp_path / "bridge.py"
+    script.write_text(_BRIDGE_SOURCE)
+    tool = {"name": "get_about", "method": "GET", "path": "/about", "parameters": [], "inputSchema": {"type": "object"}}
+    manifest = {
+        "name": "t",
+        "schema": MANIFEST_SCHEMA,
+        "script": "bridge.py",
+        "base_url": xml_server,
+        "accept_retry": {"statuses": [406], "values": []},
+        "operations": [tool],
+    }
+    path = tmp_path / "t.operations.json"
+    path.write_text(json.dumps(manifest))
+    init = {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}
+    messages = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": init},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "get_about", "arguments": {}}},
+    ]
+    run = subprocess.run(
+        [sys.executable, str(script)],
+        input="\n".join(json.dumps(m) for m in messages) + "\n",
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"MCP_BRIDGE_MANIFEST": str(path), "PATH": "/usr/bin:/bin", "MCP_BRIDGE_ACCEPT": "application/json"},
+    )
+    assert "406" in run.stdout.strip().splitlines()[-1]
 
 
 def test_the_configured_fallback_takes_xml_too(ctx, tmp_path, xml_server) -> None:

@@ -247,12 +247,17 @@ read as a search path, one directory at a time.
 
 ### Ask the API for what it serves, and never hide a credential in a default
 
-Send the `Accept` header the API documents for each operation -- not JSON by
-assumption. Open Build Service serves XML and answers `Accept:
-application/json` with 406, so every call through build.example.net's bridge
-failed. The generated bridge asks for each operation's documented media types
-and otherwise accepts anything (`mcp.bridge.generated.accept`,
-`MCP_BRIDGE_ACCEPT`). Test a real call, not only the handshake.
+Send ONE `Accept` value: the single media type an operation documents, or
+`*/*` -- never JSON by assumption, and never a weighted list such as
+`application/xml, text/xml;q=0.9, */*;q=0.1`. Open Build Service answered
+`Accept: application/json` alone with 406, and answered a logged-in request
+with any multi-value Accept with its gateway's HTML 404 page while `*/*`
+returned the data; anonymous calls got 401 either way, so a run without a
+credential never sees it. Read the override from `MCP_BRIDGE_ACCEPT`, as the
+generated bridge does (`mcp.bridge.generated.accept`), so the verifier can
+correct it (`mcp.verification.request_forms`); and retry a read-only call
+answered 404/406/415 once with `*/*`. Test a real call, not only the
+handshake -- and a 404 *web page* is never evidence about the account.
 
 A credential is never the default of a reference: `${NAME:-<token>}` puts the
 token in the file. Declare it in `secret_env`; the caller strips a
