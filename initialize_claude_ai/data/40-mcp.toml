@@ -800,6 +800,19 @@ repoint_by_relative_path = true
 own_reference_names = true
 owned_reference_template = "{SLUG}_{NAME}"
 trust_reference = "ICA_MCP_CA_BUNDLE"
+# A trust variable (SSL_CERT_FILE, REQUESTS_CA_BUNDLE, ...) holding the system
+# bundle or one in this run's trust store is written ${<trust_reference>:-path}
+# too -- never through the state directory's variable: gitlab.example.net's
+# entry read ${ICA_STATE_DIR:-...}/trust/ca-bundle.pem, a file only the run
+# machine had, and died at once anywhere else.
+#
+# A command written by a bare name the client's PATH does not find, but that
+# this run resolved and launched (through paths.extra_bin_dirs), is written as
+# the path that ran -- then named like any absolute path (${ICA_MCP_UVX:-...}).
+# gitlab.example.net's entry said "uvx" while its trial ran /root/.local/bin/uvx,
+# and the entry as written failed with "No such file or directory".  A name
+# the client finds stays bare (the launcher form).
+resolve_unfound_commands = true
 owned_prefixes = []
 carry_settings_value = true
 # Settings in which the operator names a credential variable on purpose

@@ -568,7 +568,12 @@ written is what was trialled:
 - **Slow is not broken.** An existing registration that times out is tried
   again with a longer deadline (`mcp.packages.slow_start_retries`,
   `slow_start_timeout_factor`), and a timeout never replaces an entry
-  `claude mcp list` reports connected.
+  `claude mcp list` reports connected. The finished entry's own start check
+  gets the same patience: a server still running at every deadline is *not
+  confirmed*, never "does not start" -- it is written, not repaired against
+  or refused, and the report says so. gitlab.example.net's GraphQL server spent
+  7 to 68 s introspecting a large schema; refused after one 90 s try, its
+  address was left with no entry.
 
 **A setting is not a credential; a public server works without a login.**
 - **Unset settings.** In a trial, a setting's `${NAME}` that nothing sets (a
@@ -2119,7 +2124,14 @@ the slots it proved. Nothing is lost; the claim just waits for the evidence.
 Whatever is written, the finished entry is then **launched exactly as written**
 before the run says anything about it (`mcp.registration.verify_as_written`).
 Every other gate judges the candidate; this one judges the artefact, and they
-are not the same object.
+are not the same object. So the artefact is written *as the trial ran it*: a
+command named bare that the client's `PATH` does not find, but this run
+resolved and launched, is written as that path (`${ICA_MCP_UVX:-…}`;
+`mcp.registration.resolve_unfound_commands`) -- a name the client finds stays
+bare. A trust variable holding the system bundle or one in this run's trust
+store reads `${ICA_MCP_CA_BUNDLE:-…}`, never a path into the state directory.
+A server that writes to stdout before its handshake is tolerated and said
+(`Handshake.stdout_noise`), so a stricter client can be explained.
 
 **How such an endpoint gets found.** The tier-1 agent is told explicitly not to
 drop an endpoint that refuses it: it proposes the endpoint with

@@ -240,6 +240,15 @@ class Handshake:
     #: Accept header a gateway rejected for a logged-in call
     #: (``[mcp.verification.request_forms]``); empty when nothing was changed.
     request_forms: dict[str, str] = field(default_factory=dict)
+    #: Why the entry's start was neither proved nor disproved: still no handshake
+    #: after every slow-start retry while the server kept running -- gitlab-
+    #: graphql spent 7 to 68 s introspecting a large schema. Inconclusive, never
+    #: "did not start" ([mcp.packages] slow_start_*); empty when decided.
+    start_unconfirmed: str = ""
+    #: The first line the server wrote on stdout that was not the protocol --
+    #: a banner before its handshake. Tolerated here; said, so a client that is
+    #: stricter can be explained (``McpWriter.claude_check``).
+    stdout_noise: str = ""
     #: Values that do not fit their slot (``[mcp.discovery.auth.value_shapes]``):
     #: ``{name, remedy}`` -- names and the shape they lack, never the value.
     shape_problems: list[dict[str, str]] = field(default_factory=list)
@@ -383,6 +392,8 @@ class Handshake:
             "contract_skipped": [dict(row) for row in self.contract_skipped],
             "address_forms": dict(self.address_forms),
             "request_forms": dict(self.request_forms),
+            "start_unconfirmed": self.start_unconfirmed,
+            "stdout_noise": self.stdout_noise,
             "shape_problems": [dict(row) for row in self.shape_problems],
             "resources": self.resources[:50],
             "prompts": self.prompts[:50],

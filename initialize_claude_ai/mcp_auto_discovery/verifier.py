@@ -3649,21 +3649,48 @@ class CandidateVerifier:
         argv, env, gaps = launch_of(entry, {**os.environ, **known, **filled} if (filled or known) else None)
         if not argv:
             return None
-        shake = self.prober.probe_stdio(
-            argv,
-            env=env,
-            timeout=self.packages.float_("trial_timeout_seconds", 90),
-            # The client's environment, not ours. Inheriting our own was what
-            # made this check unable to predict the thing it exists to predict:
-            # an entry could pass here on a variable from the operator's shell
-            # and fail in Claude Code, which passes only what the entry declares.
-            # See McpProber.client_env.
-            inherit=not self.verification.bool_("client_env.strict", True),
-            # The entry's credential, as the client would pass it -- checked
-            # only when every credential variable resolved to a real value,
-            # never when a stand-in fills one.
-            login=not filled and real_credential(env),
-        )
+
+        def launch(timeout: float) -> Handshake:
+            return self.prober.probe_stdio(
+                argv,
+                env=dict(env) if env is not None else env,
+                timeout=timeout,
+                # The client's environment, not ours. Inheriting our own was what
+                # made this check unable to predict the thing it exists to predict:
+                # an entry could pass here on a variable from the operator's shell
+                # and fail in Claude Code, which passes only what the entry declares.
+                # See McpProber.client_env.
+                inherit=not self.verification.bool_("client_env.strict", True),
+                # The entry's credential, as the client would pass it -- checked
+                # only when every credential variable resolved to a real value,
+                # never when a stand-in fills one.
+                login=not filled and real_credential(env),
+            )
+
+        timeout = self.packages.float_("trial_timeout_seconds", 90)
+        shake = launch(timeout)
+        # The same patience a trial gets (_retry_slow_start), for every entry:
+        # gitlab-graphql started in 7 to 68 s while it introspected a large
+        # schema, the trial saw 21 s, and this check -- one try, 90 s -- called
+        # a server that was still loading "did not start" and the address was
+        # left with no entry. Slow is not broken.
+        factor = max(1.0, self.packages.float_("slow_start_timeout_factor", 2.0))
+        for _attempt in range(max(0, self.packages.int_("slow_start_retries", 1))):
+            if shake.ok or not self.looks_transient(shake, timeout):
+                break
+            log.info(
+                "%s: no handshake within %.0fs while it was running -- asked again with %.0fs",
+                label or argv[0],
+                timeout,
+                timeout * factor,
+            )
+            timeout *= factor
+            shake = launch(timeout)
+        if not shake.ok and self.looks_transient(shake, timeout):
+            shake.start_unconfirmed = (
+                f"no handshake within {timeout:.0f}s while the server kept running -- a slow start, not a failed "
+                "one; the final check asks again"
+            )
         self.judge_login(shake)
         if not shake.ok and not filled and real_credential(env):
             self.credential_failure(shake)
@@ -3684,7 +3711,14 @@ class CandidateVerifier:
                 f"the entry as written leaves {', '.join(gaps)} unresolved -- "
                 "neither set in this environment nor given a ${NAME:-default}"
             )
-        if not shake.ok:
+        if shake.stdout_noise:
+            shake.add_hint(
+                f"it writes to stdout before its handshake ({shake.stdout_noise[:80]!r}) -- tolerated here; a client "
+                "that reads stdout strictly as the protocol may not connect"
+            )
+        if shake.start_unconfirmed:
+            log.warning("%s: the entry's start is not confirmed (%s)", label or argv[0], shake.start_unconfirmed)
+        elif not shake.ok:
             log.warning(
                 "%s: the entry as written did not start (%s)",
                 label or argv[0],

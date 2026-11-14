@@ -1071,6 +1071,7 @@ class McpProber:
             except Exception:  # noqa: BLE001 - an explanation never costs the trial
                 pass
             session.close()
+            result.stdout_noise = redact.redact(getattr(session, "stdout_noise", "") or "")
             result.elapsed = time.monotonic() - started - sum(waited)
             if requests is not None:
                 result.browser_login = noninteractive.take(requests)
@@ -1969,6 +1970,10 @@ class _StdioSession:
                 message = json.loads(line)
             except json.JSONDecodeError:
                 # Servers commonly print banners to stdout before behaving.
+                # Tolerated, and remembered: a client stricter than this one
+                # may not tolerate it (Handshake.stdout_noise).
+                if not getattr(self, "stdout_noise", ""):
+                    self.stdout_noise = line[:160]
                 continue
             if isinstance(message, dict) and message.get("id") == wanted:
                 return message

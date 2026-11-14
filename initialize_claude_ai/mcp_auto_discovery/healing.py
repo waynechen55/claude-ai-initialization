@@ -132,6 +132,15 @@ class Healing:
     #: it -- variable names and directories, never values -- gathered only when
     #: it could not be made to start. See :meth:`EntryDoctor.launch_difference`.
     differences: list[str] = field(default_factory=list)
+    #: Why the entry's start is neither proved nor disproved -- a slow start
+    #: (:attr:`.Handshake.start_unconfirmed`). Not a failure: nothing is
+    #: repaired for it and the writer does not refuse it.
+    unconfirmed: str = ""
+
+    @property
+    def usable(self) -> bool:
+        """Started, or still starting when every slow-start retry ran out -- never refused for that."""
+        return self.ok or bool(self.unconfirmed)
 
     @property
     def healed(self) -> bool:
@@ -139,7 +148,8 @@ class Healing:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "starts": None if not self.tested else self.ok,
+            "starts": None if not self.tested or self.unconfirmed else self.ok,
+            "start_unconfirmed": self.unconfirmed,
             "repairs_applied": list(self.applied),
             "repairs_attempted": list(self.attempts),
             "error": redact.redact(self.error),
@@ -191,6 +201,16 @@ class EntryDoctor:
             return Healing(ok=True, tested=False, entry=entry)
         if shake.ok:
             return Healing(ok=True, entry=entry)
+        if shake.start_unconfirmed:
+            # Still running, still no handshake after every slow-start retry:
+            # nothing in the entry is shown to be wrong, so nothing is repaired.
+            return Healing(
+                ok=False,
+                entry=entry,
+                error=redact.redact(shake.error or ""),
+                unconfirmed=shake.start_unconfirmed,
+                attempts=["not repaired: a slow start is not a failed one"],
+            )
 
         error = redact.redact((shake.error or "it exited without completing a handshake").strip())
         result = Healing(ok=False, entry=entry, error=error)
@@ -422,6 +442,13 @@ class EntryDoctor:
             # rebuilt the entry from the unrepaired candidate and refused it.
             adopt_launch(candidate, revised)
             return Healing(ok=True, entry=entry, applied=["agent"], attempts=result.attempts)
+        if shake is not None and shake.start_unconfirmed:
+            result.attempts.append(f"agent: applied, start not confirmed ({shake.start_unconfirmed})")
+            log.info("%s: the agent's repair runs and has not answered yet -- %s", name, shake.start_unconfirmed)
+            adopt_launch(candidate, revised)
+            return Healing(
+                ok=False, entry=entry, applied=["agent"], attempts=result.attempts, unconfirmed=shake.start_unconfirmed
+            )
         why = redact.redact(getattr(shake, "error", "") or "still did not start")
         result.attempts.append(f"agent: {why}")
         if announce:
@@ -478,6 +505,21 @@ class EntryDoctor:
                     self.ctx.console.bullet(f"{name}: repaired by {wanted}", indent=6)
                 log.info("%s: repaired by %s", name, wanted)
                 return Healing(ok=True, entry=changed, applied=[wanted], attempts=result.attempts)
+            if shake is not None and shake.start_unconfirmed:
+                # The repair got it running -- gitlab-graphql's bare "uvx" was
+                # ENOENT, the absolute path started and was still loading its
+                # schema at the deadline. Kept, and said to be unconfirmed.
+                result.attempts.append(f"{wanted}: applied, start not confirmed ({shake.start_unconfirmed})")
+                if self._note:
+                    candidate.add_note(self._note)
+                log.info("%s: repaired by %s; its start is not confirmed yet", name, wanted)
+                return Healing(
+                    ok=False,
+                    entry=changed,
+                    applied=[wanted],
+                    attempts=result.attempts,
+                    unconfirmed=shake.start_unconfirmed,
+                )
             why = redact.redact(getattr(shake, "error", "") or "still did not start")
             result.attempts.append(f"{wanted}: {why}")
         return None

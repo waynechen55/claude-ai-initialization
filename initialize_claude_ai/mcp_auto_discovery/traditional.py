@@ -894,7 +894,7 @@ class TraditionalPipeline:
         keep, dropped = [], []
         for candidate in stage.verified:
             healing = self._examine(candidate, outcome, agent_repair)
-            if healing.ok or not refuse:
+            if healing.usable or not refuse:
                 keep.append(candidate)
             else:
                 dropped.append((candidate, healing))
@@ -904,7 +904,7 @@ class TraditionalPipeline:
             if limit and passed >= limit:
                 break
             healing = self._examine(candidate, outcome, agent_repair)
-            if healing.ok or not refuse:
+            if healing.usable or not refuse:
                 passed += 1
             else:
                 dropped.append((candidate, healing))
@@ -986,7 +986,9 @@ class TraditionalPipeline:
         name = self.writer_name(candidate, outcome)
         healing = self.doctor.examine(candidate, name, agent_repair=agent_repair)
         candidate.healing = healing
-        if not healing.ok and healing.tested:
+        if healing.unconfirmed:
+            candidate.add_note(f"its entry's start is not confirmed: {healing.unconfirmed}")
+        elif not healing.ok and healing.tested:
             candidate.add_note(f"its entry does not start as written: {healing.error}")
         if healing.ok and healing.applied:
             candidate.add_note(

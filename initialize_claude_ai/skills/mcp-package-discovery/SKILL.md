@@ -161,6 +161,12 @@ Compose it from the registry data rather than guessing:
 | pypi | uvx | `uvx <identifier>` |
 | oci | docker | `docker run -i --rm <identifier>:<version>` |
 
+A launcher named bare (`uvx`, `npx`) is fine: the writer keeps it bare where
+the client's `PATH` finds it, and writes the path your trial ran where it does
+not (`${ICA_MCP_UVX:-…}`). A first start may take a minute -- a download, a
+large schema loaded -- and is judged with the same patience as your trial:
+still running at the deadline is "start not confirmed", never "broken".
+
 Append `runtimeArguments` then `packageArguments`, in that order, using each
 argument's `value` (skip ones whose value is a placeholder the operator must
 fill — a trial that fails loudly is better than one that silently misbehaves).

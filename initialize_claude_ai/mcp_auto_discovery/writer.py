@@ -356,7 +356,9 @@ class Registration:
             "credential_hint": self.credential_hint,
             **(self.portability.to_dict() if self.portability else {}),
             **(self.grounding.to_dict() if self.grounding else {}),
-            "starts_as_written": None if self.start_check is None else self.start_check.ok,
+            "starts_as_written": None
+            if self.start_check is None or getattr(self.start_check, "start_unconfirmed", "")
+            else self.start_check.ok,
             # What healing did, in the machine-readable record as well as on
             # screen. "We tried and failed" and "we did not try" are different
             # facts, and a tool reading this report needs both.
@@ -1573,7 +1575,7 @@ class McpWriter:
             # The env key is passed so a stray path can be named after the
             # variable that holds it: MCP_BRIDGE_CA_BUNDLE is a better name for
             # a PEM than anything derived from the filename. See `portable`.
-            name: self.portable(value, roots, key=name)
+            name: self.ca_bundle_reference(name, value) or self.portable(value, roots, key=name)
             for name, value in candidate.env.items()
             if value != ""
         }
@@ -1594,7 +1596,10 @@ class McpWriter:
             if self.env_contract.session(key) and key not in isolated_config:
                 env[key] = OPTIONAL_PLACEHOLDER.format(name=key)
         if candidate.kind == "stdio":
-            command = [self.portable(token, roots) for token in candidate.full_command()]
+            launched = list(candidate.full_command())
+            if launched:
+                launched[0] = self.launched_command(launched[0])
+            command = [self.portable(token, roots) for token in launched]
             entry["command"] = command[0] if command else ""
             if len(command) > 1:
                 entry["args"] = command[1:]
@@ -1794,6 +1799,59 @@ class McpWriter:
             if scheme.strip().lower() == "env" and name.strip():
                 names.add(name.strip())
         return names
+
+    def launched_command(self, command: str) -> str:
+        """The command as the trial launched it, when the client could not find it by name.
+
+        gitlab.example.net's entry was written ``"command": "uvx"`` while its trial
+        ran ``/root/.local/bin/uvx`` -- found through this program's extra
+        binary directories, not the ``PATH`` a client passes on -- and the
+        entry as written died with "No such file or directory: 'uvx'". A bare
+        name the client's ``PATH`` resolves stays bare (the launcher form:
+        ``uvx``, ``npx``); one it does not is written as the path that ran,
+        which :meth:`portable` then names (``${ICA_MCP_UVX:-…}``).
+        (``mcp.registration.resolve_unfound_commands``.)
+        """
+        text = str(command or "").strip()
+        if not text or "/" in text or "${" in text:
+            return command
+        if not self.registration.bool_("resolve_unfound_commands", True):
+            return command
+        client_path = os.environ.get("PATH", "")
+        if shutil.which(text, path=client_path):
+            return command
+        found = self.ctx.runner.which(text)
+        if found and os.path.isabs(str(found)):
+            return str(found)
+        return command
+
+    def ca_bundle_reference(self, key: str, value: Any) -> str:
+        """``${ICA_MCP_CA_BUNDLE:-<path>}`` for a trust variable holding a CA bundle this run knows; "" otherwise.
+
+        gitlab.example.net's entry pointed ``SSL_CERT_FILE`` at
+        ``${ICA_STATE_DIR:-…}/trust/ca-bundle.pem`` -- a file in the run
+        machine's private state directory, so on the next machine the server
+        died at once. A bundle is a fact about the machine: the system's own,
+        or the one this run assembled in its trust store, is read through the
+        one per-machine name phase 1 sets (``trust_reference``), with the
+        path that worked here as its default.
+        """
+        text = str(value or "").strip()
+        if not text.startswith("/") or key not in trust.trust_variables(self.settings):
+            return ""
+        name = self.registration.str_("trust_reference", "ICA_MCP_CA_BUNDLE")
+        if not name or not self.registration.bool_("own_reference_names", True):
+            return ""
+        known = self._is_system_bundle(text)
+        if not known:
+            from ..core.trust_store import TrustStore
+
+            store = TrustStore.for_run(self.ctx).store_dir()
+            try:
+                known = store is not None and os.path.realpath(text).startswith(os.path.realpath(str(store)) + os.sep)
+            except OSError:
+                known = False
+        return "${%s:-%s}" % (name, text) if known else ""
 
     def _is_system_bundle(self, value: str) -> bool:
         """Is ``value`` this machine's own CA bundle (the file :func:`.trust.system_bundle` names)?"""
@@ -3616,6 +3674,18 @@ class McpWriter:
             )
         registration.start_check = Handshake(ok=healing.ok, transport=Transport.STDIO, error=healing.error)
         if healing.ok:
+            return
+        if healing.unconfirmed:
+            # Running, not answering yet, after every slow-start retry: written,
+            # and said. Refusing it emptied gitlab.example.net's address while
+            # its server was loading a large schema.
+            registration.start_check.start_unconfirmed = healing.unconfirmed
+            registration.note(f"the entry's start is not confirmed: {healing.unconfirmed}")
+            registration.remediation.append(
+                f"{registration.name}: written, but its start was not confirmed -- {healing.unconfirmed}. "
+                "Its first start can take that long (a launcher downloading, a server loading a large schema); "
+                f"`{self.get_command_for(registration.name)}` asks Claude Code once it has started."
+            )
             return
         detail = (healing.error or "it exited without completing a handshake").strip()
         registration.note(f"the entry as written did not start: {detail}")
@@ -6392,7 +6462,7 @@ class McpWriter:
                 if not (candidate.verified or (waiting_ok and candidate.needs_credential)):
                     continue
                 healing = getattr(candidate, "healing", None)
-                if healing is not None and healing.tested and not healing.ok:
+                if healing is not None and healing.tested and not healing.usable:
                     continue
                 seen.add(candidate.identity())
                 out.append(candidate)
@@ -7449,6 +7519,8 @@ class McpWriter:
             return Check("starts", None, "not launched here")
         if shake.ok:
             return Check("starts", True, "the entry as written completed a handshake")
+        if getattr(shake, "start_unconfirmed", ""):
+            return Check("starts", None, f"not confirmed: {shake.start_unconfirmed}")
         return Check(
             "starts",
             False,

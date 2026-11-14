@@ -14,6 +14,20 @@ detailed record of how the program reached 0.1.0 is in
 
 ### Fixed
 
+- A proven server is no longer dropped because its entry's first start is
+  slow. The finished entry's start check retries a timed-out launch with a
+  longer deadline, as trials do (`slow_start_retries`,
+  `slow_start_timeout_factor`), and a server still running at every deadline
+  is written with "start not confirmed" -- not repaired against, not refused.
+- A command named bare that the client's `PATH` does not find, but the run
+  resolved and launched, is written as that path (`${ICA_MCP_UVX:-...}`;
+  `mcp.registration.resolve_unfound_commands`). Names the client finds stay bare.
+- CA bundles in entries are read through `${ICA_MCP_CA_BUNDLE:-...}` when they
+  are the system's or the run's trust-store bundle, never through a path into
+  the program's state directory.
+- A server that writes to stdout before its handshake is reported
+  (`stdout_noise`), so a stricter client's refusal can be explained.
+
 - A logged-in call answered by a gateway's web page (404/406/415) is no longer
   read as a refused login or a missing account. The request's form is tried
   first (`[mcp.verification.request_forms]`): each request-form variable the
