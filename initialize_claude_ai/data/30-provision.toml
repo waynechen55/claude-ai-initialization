@@ -1,0 +1,393 @@
+####################################################################
+# initialize-claude-ai :: phase 3 provisioning
+#
+# Writes ~/.claude/settings.json (merged, backed up first), exports the matching
+# environment variables, and prints a full inventory of the resulting
+# environment: backend, account, project, region, models, paths, MCP servers.
+####################################################################
+
+[provision]
+enabled = true
+# vertex | anthropic-api | bedrock | auto
+# 'auto' picks the first backend that phase 2 actually authenticated, following
+# backend_priority below.
+backend = "${INITIALIZE_CLAUDE_AI_BACKEND:-auto}"
+backend_priority = ["vertex", "anthropic-api", "bedrock"]
+# Merge into the existing settings.json instead of replacing it.
+merge_settings = true
+# Keep a timestamped copy before every write.
+backup_settings = true
+backup_suffix = "%Y%m%d-%H%M%S"
+# Write settings at user scope (~/.claude/settings.json) or project scope.
+scope = "user"
+# Also write the discovered values into the initialize-claude-ai env files.
+export_env = true
+# Take out of settings.json (and the env files) the variables this phase wrote
+# for a backend that is no longer the selected one. Merging alone cannot delete,
+# so without this, provisioning anthropic-api over a machine that previously ran
+# Vertex leaves CLAUDE_CODE_USE_VERTEX = "1" behind and Claude Code keeps
+# routing to Vertex -- from a file nobody remembers editing.
+#
+# Only names this phase is capable of writing are ever removed: the union of
+# every backend's [env] keys and [env_names] values. A variable the operator put
+# in settings.json themselves is outside that set and is never touched. Set
+# false to make phase 3 purely additive again.
+retire_stale_env = true
+# Query the provider for the live model list rather than trusting the catalog.
+discover_models = true
+model_discovery_timeout_seconds = 30
+# Fail the phase when the configured model is not offered by the backend.
+strict_model_check = false
+# Replace a model already present in settings.json even when initialize-claude-ai only
+# inferred one. Off: an explicit choice such as "opus" survives a re-run, and
+# --default-model (or provision.settings.model) still overrides it.
+overwrite_inferred_model = false
+# The same rule for the other non-env keys under [provision.settings] below --
+# theme, tui, permissions.defaultMode. Off, they are seeded when settings.json
+# does not answer the question yet and left alone when it does, because Claude
+# Code writes that file too: /theme and /permissions put the operator's own
+# answer there, and a re-run of phase 3 has no business undoing it. Set true to
+# make the configured values authoritative on every run.
+overwrite_existing_settings = false
+# Stop the phase when no tier resolved to a model at all. There is nothing
+# reasonable left to write at that point: Claude Code would be pointed at a
+# backend with no model to call it with.
+require_model = true
+# Model tiers Claude Code understands, largest first.
+tiers = ["opus", "sonnet", "haiku"]
+# Which of those tiers Claude Code opens on when --default-model says nothing.
+# settings.json "model" is written as the tier name itself -- "opus" -- so this
+# is literally the value that lands there; the id it resolved to goes into
+# ANTHROPIC_DEFAULT_OPUS_MODEL instead, where a tier switch inside Claude Code
+# still finds it.
+default_tier = "${INITIALIZE_CLAUDE_AI_DEFAULT_TIER:-opus}"
+# Settings file names, relative to the chosen scope's directory.
+settings_filename = "settings.json"
+project_settings_dir = ".claude"
+# Where a credential goes when scope = "project": .claude/settings.json is the
+# file Claude Code means to be committed, so a credential (and every value kept
+# out of .mcp.json) goes to the project's local settings file instead, which
+# Claude Code reads the same way and keeps out of version control.  With
+# scope = "user" it goes to the user's settings.json, as everything else does.
+project_local_settings_filename = "settings.local.json"
+
+# ------------------------------------------------------------------
+# Showing the operator which models they can actually use
+# ------------------------------------------------------------------
+# The catalogue above is fetched and then used only to pick a model and to check
+# the chosen one -- so it went into the JSON report and never onto the screen.
+# The operator finished phase 3 without ever being told what their credential
+# can reach, and found out in phase 4, where every agent call returned
+#
+#   The model claude-opus-5-5 is not available on your vertex deployment
+#
+# 29 times over thirteen addresses.  Phase 3 had the answer and did not say it.
+[provision.catalogue]
+# Show the available models at the end of phase 3.
+show = true
+# How many to print per tier before saying "and N more".  The point is
+# recognition, not completeness -- the full list is one command away, and that
+# command is printed too.
+per_tier = 4
+# ...and how many to print when nothing separates them into tiers.
+untiered = 8
+
+# Where the full list lives, and how to get it, per backend.  Both are shown
+# whatever happens, because the catalogue can be empty for reasons that have
+# nothing to do with the operator's access -- an offline host, a backend with no
+# discovery route, a permission this program does not need but the listing API
+# does.  "I could not list them" is only half an answer; the other half is where
+# to look.
+#
+# Keyed by backend name, so supporting another backend is an entry here rather
+# than a change in code.  {project} and {region} are filled in from the resolved
+# profile; an unused token is simply left alone.
+[provision.catalogue.docs]
+vertex = "https://console.cloud.google.com/vertex-ai/model-garden?project={project}"
+anthropic-api = "https://docs.anthropic.com/en/docs/about-claude/models"
+bedrock = "https://console.aws.amazon.com/bedrock/home?region={region}#/modelaccess"
+
+[provision.catalogue.commands]
+vertex = "gcloud ai model-garden models list --project={project} --region={region}"
+anthropic-api = "curl -s https://api.anthropic.com/v1/models -H \"x-api-key: $ANTHROPIC_API_KEY\" -H \"anthropic-version: 2023-06-01\""
+bedrock = "aws bedrock list-foundation-models --region {region} --by-provider anthropic"
+
+# Coordinates each backend cannot be provisioned without, by the name they have
+# both in the resolved profile and as a setting under that backend's section
+# below. When one of these is still empty after the flag, the config files, the
+# environment and any --env-file have all been consulted, phase 3 stops: there
+# is no honest default, and a plausible guess is worse than nothing. A wrong
+# project bills somebody else and then fails with a permission error naming a
+# project the operator never chose.
+#
+# The failure names every source from the [sources] table in 00-core.toml, so
+# the operator is told the flag and the variable names rather than the key.
+
+[provision.required]
+vertex = ["project"]
+# base_url always has a value, so there is nothing here that can be empty.
+anthropic_api = []
+# Every Bedrock call is addressed to a region and there is no sensible default
+# for which one; AWS_REGION or nothing.
+bedrock = ["region"]
+
+# Last-resort model ids, used for a tier only when nothing else answered: no
+# --default-<tier>-model, no ANTHROPIC_DEFAULT_<TIER>_MODEL, and no live
+# catalogue to pick from either -- an offline host, a discovery timeout, a
+# region whose publisher list came back empty.
+#
+# They are deliberately *not* defaults in the ordinary sense. A literal id
+# cannot know which models this backend and region actually serve, and Vertex,
+# the Anthropic API and Bedrock spell the same model differently; the live
+# catalogue is always the better answer and is always tried first. These exist
+# so that a run with no network still writes a usable settings.json rather than
+# leaving a tier unset, which would leave Claude Code with nothing to switch to.
+[provision.model_fallbacks]
+opus = "${INITIALIZE_CLAUDE_AI_FALLBACK_OPUS_MODEL:-claude-opus-5}"
+sonnet = "${INITIALIZE_CLAUDE_AI_FALLBACK_SONNET_MODEL:-claude-sonnet-5}"
+haiku = "${INITIALIZE_CLAUDE_AI_FALLBACK_HAIKU_MODEL:-claude-haiku-4-5}"
+
+[provision.settings]
+# Non-env keys written into settings.json, alongside the env block. Every key in
+# this section (and in the sub-tables below) is written as it stands, so adding
+# one here is all it takes to have phase 3 write it -- no code change. Empty
+# values are dropped, which is also how a key is switched off, by the setting
+# rather than by the variable below it -- `--set provision.settings.tui=` or
+# INITIALIZE_CLAUDE_AI_PROVISION__SETTINGS__TUI= . (Blanking the short variable
+# does not: an empty environment variable means "unset" everywhere here, which
+# is what makes the defaults below defaults at all.)
+#
+# Except for model, these are seeded rather than enforced: see
+# provision.overwrite_existing_settings above.
+#
+# Which model Claude Code opens on, as a tier name -- opus, sonnet, haiku --
+# rather than an id. --default-model. A tier keeps working when the models move
+# on, and keeps settings.json portable: the backends spell the same model three
+# different ways, and the id the selected one wants is exported as
+# ANTHROPIC_DEFAULT_<TIER>_MODEL. Given an id here, phase 3 writes the tier that
+# id belongs to. Left empty, provision.default_tier decides.
+model = "${INITIALIZE_CLAUDE_AI_MODEL:-${DEFAULT_MODEL:-}}"
+# Colour scheme: auto follows the terminal's own light/dark setting, which is
+# the only one that is right on a machine whose terminal theme is not known here.
+theme = "${INITIALIZE_CLAUDE_AI_THEME:-auto}"
+# Terminal layout. fullscreen gives Claude Code the alternate screen buffer.
+tui = "${INITIALIZE_CLAUDE_AI_TUI:-fullscreen}"
+
+# How Claude Code treats a tool call that no rule has already allowed or denied.
+# "default" asks; the alternatives (acceptEdits, plan, bypassPermissions) each
+# give something away, so the freshly provisioned machine gets the one that
+# stops and asks. Any allow/deny lists already in settings.json are merged, not
+# replaced -- only this key is written.
+[provision.settings.permissions]
+defaultMode = "${INITIALIZE_CLAUDE_AI_PERMISSION_MODE:-default}"
+
+# Anything else, written verbatim and last, so it also overrides the keys above.
+# See `claude config` for the full set.
+[provision.settings.extra]
+# example: cleanupPeriodDays = 30
+
+# ------------------------------------------------------------------
+# Vertex AI
+# ------------------------------------------------------------------
+[provision.vertex]
+# Whether this host may be provisioned against Vertex at all. --use-vertex.
+# 1, the default, leaves it first in backend_priority, so `backend = "auto"`
+# picks it as soon as Google Cloud is authenticated. 0 takes it out of that
+# walk entirely, and turns `--provision-backend vertex` into a refusal rather
+# than a silent fall-through to another provider.
+enabled = "${INITIALIZE_CLAUDE_AI_USE_VERTEX:-${CLAUDE_CODE_USE_VERTEX:-1}}"
+# Named in the remediation when this backend is asked for while switched off,
+# so the message points at the flag rather than at a config key.
+enable_flag = "--use-vertex 1"
+# The project Vertex calls are billed to. --gcloud-project (or --vertex-project,
+# the same flag). No project id is
+# invented here: a wrong one bills somebody else and fails with a permission
+# error naming a project the operator never chose. Phase 3 resolves it from
+# this setting, then from the project phase 2 actually signed in against, then
+# from gcloud's active project -- so a host that authenticated already has one.
+project = "${ANTHROPIC_VERTEX_PROJECT_ID:-${GOOGLE_CLOUD_PROJECT:-${CLOUDSDK_CORE_PROJECT:-}}}"
+# --gcloud-region. 'global', 'us' and 'europe' are multi-region locations;
+# single regions such as us-east5 also work and get their own endpoint host.
+# 'global' is the default because it is the location reachable without knowing
+# anything about where the project's quota lives.
+region = "${CLOUD_ML_REGION:-${GOOGLE_CLOUD_LOCATION:-global}}"
+known_regions = [
+    "us", "europe", "global",
+    "us-east5", "us-central1", "us-east1", "us-west1", "us-west4",
+    "europe-west1", "europe-west4", "europe-central2",
+    "asia-southeast1", "asia-east1", "asia-northeast1",
+]
+publisher = "anthropic"
+# {region} and {project} are substituted at run time.
+endpoint_template = "https://{region}-aiplatform.googleapis.com"
+global_endpoint_template = "https://aiplatform.googleapis.com"
+# Locations that have no host of their own and are served by the global one.
+# Verified live: us-east5-aiplatform.googleapis.com answers, but
+# us-aiplatform.googleapis.com 404s every route -- 'us' and 'europe' are
+# multi-region *locations*, not regional endpoints.
+global_regions = ["global", "us", "europe"]
+# If the regional host has no publisher catalogue, ask the global host instead
+# rather than reporting the region as offering no models.
+fallback_to_global_catalogue = true
+# Verified live: the publisher-model catalogue is only served on v1beta1; the
+# v1 route returns 404. Response shape: {"publisherModels": [...], "nextPageToken"?}.
+models_path_template = "/v1beta1/publishers/{publisher}/models"
+models_page_size = 200
+# Stop after this many pages even if the catalogue keeps offering a next token,
+# so a paginating endpoint that never terminates cannot hang the phase.
+max_pages = 10
+# Sent as x-goog-user-project so the call is billed/quota'd to the right project.
+quota_project = "${GOOGLE_CLOUD_QUOTA_PROJECT:-}"
+# Model ids to write into settings. Vertex uses name@version.
+default_model = "${INITIALIZE_CLAUDE_AI_VERTEX_MODEL:-}"
+# Credential references used to call the model catalogue. First hit wins.
+token_refs = ["gcloud-adc", "gcloud-token"]
+# Variables Claude Code reads to log in that phase 2 may set (a service-account
+# key's path).  Written into settings.json's env block when set -- never only
+# into env.sh, which a new terminal does not source -- and never when the value
+# is shaped like a credential.
+login_env = ["GOOGLE_APPLICATION_CREDENTIALS"]
+# Only offer models whose launchStage is in this list. Empty = accept all.
+accepted_launch_stages = ["GA", "PUBLIC_PREVIEW"]
+# Vertex model ids carry a version suffix: claude-sonnet-4-5@20250929.
+model_version_separator = "@"
+# versionId values that are placeholders rather than a dated release. Verified
+# live: the newest models report versionId "default", and 'claude-opus-5@default'
+# is not an address the backend accepts -- they are used by bare id.
+placeholder_versions = ["default", "latest"]
+[provision.vertex.model_aliases]
+# Pins for each tier -- --default-opus-model, --default-sonnet-model,
+# --default-haiku-model -- mapped onto the tier env vars below. Left blank, and
+# they are blank by default, initialize-claude-ai fills them from the live
+# catalogue instead, falling back to provision.model_fallbacks if it cannot
+# reach one. A pin skips both: it is taken at its word.
+opus = "${ANTHROPIC_DEFAULT_OPUS_MODEL:-}"
+sonnet = "${ANTHROPIC_DEFAULT_SONNET_MODEL:-}"
+haiku = "${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}"
+[provision.vertex.env]
+CLAUDE_CODE_USE_VERTEX = "1"
+[provision.vertex.env_names]
+# Variable names Claude Code reads. Kept in configuration so no identifier is
+# baked into the Python.
+region = "CLOUD_ML_REGION"
+project = "ANTHROPIC_VERTEX_PROJECT_ID"
+# {TIER} is replaced with OPUS / SONNET / HAIKU.
+model_tier = "ANTHROPIC_DEFAULT_{TIER}_MODEL"
+
+# ------------------------------------------------------------------
+# Direct Anthropic API
+# ------------------------------------------------------------------
+[provision.anthropic_api]
+enabled = true
+base_url = "${ANTHROPIC_BASE_URL:-https://api.anthropic.com}"
+models_path = "/v1/models"
+models_page_size = 100
+max_pages = 10
+version_header = "2023-06-01"
+default_model = "${INITIALIZE_CLAUDE_AI_API_MODEL:-}"
+login_env = []
+# The same three pins as Vertex, kept separate because the two providers spell
+# model ids differently -- Vertex qualifies them with @version.
+[provision.anthropic_api.model_aliases]
+opus = "${ANTHROPIC_DEFAULT_OPUS_MODEL:-}"
+sonnet = "${ANTHROPIC_DEFAULT_SONNET_MODEL:-}"
+haiku = "${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}"
+# How Claude Code gets the key phase 2 resolved, when it lives where Claude Code
+# cannot see it: an apiKeyHelper command per reference scheme, built from the
+# reference ({path}, {command}, {service}, {user}; {python} = this program's
+# interpreter) -- never from the value.  A key in an exported variable needs
+# none.  auth.anthropic_api.api_key_helper, when set, is written instead.
+[provision.anthropic_api.key_helpers]
+file = "cat {path}"
+command = "{command}"
+keyring = "{python} -c 'import keyring, sys; print(keyring.get_password(sys.argv[1], sys.argv[2]) or \"\")' {service} {user}"
+
+[provision.anthropic_api.env_names]
+base_url = "ANTHROPIC_BASE_URL"
+model_tier = "ANTHROPIC_DEFAULT_{TIER}_MODEL"
+
+# ------------------------------------------------------------------
+# AWS Bedrock (present for completeness; disabled by default)
+# ------------------------------------------------------------------
+[provision.bedrock]
+enabled = false
+# No --gcloud-region here: this is a coordinate in another cloud. Set it with
+# AWS_REGION or --set provision.bedrock.region=us-east-1.
+region = "${AWS_REGION:-}"
+# The same three tier pins as the other backends -- --default-opus-model and
+# friends write to all of them. Bedrock spells model ids differently again
+# (anthropic.claude-*-v1:0, or an inference-profile ARN), which is why the live
+# catalogue, not a literal default, is what normally fills these in.
+# The AWS profile Claude Code logs in with -- a name, not a secret.
+login_env = ["AWS_PROFILE"]
+[provision.bedrock.model_aliases]
+opus = "${ANTHROPIC_DEFAULT_OPUS_MODEL:-}"
+sonnet = "${ANTHROPIC_DEFAULT_SONNET_MODEL:-}"
+haiku = "${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}"
+[provision.bedrock.env]
+CLAUDE_CODE_USE_BEDROCK = "1"
+[provision.bedrock.env_names]
+# Without these the resolved region and models never reached settings.json at
+# all, so provision.bedrock.region was a setting with nowhere to go.
+region = "AWS_REGION"
+model_tier = "ANTHROPIC_DEFAULT_{TIER}_MODEL"
+
+# ------------------------------------------------------------------
+# Inventory -- what phase 3 lists out at the end
+# ------------------------------------------------------------------
+# After writing, claude is started the way a new terminal would start it -- only
+# `keep` in its environment, from an empty directory -- and the phase says
+# whether it logs in on its own.  Phase 2's own check ran inside this process,
+# with every variable the run had; a new terminal has none of them.
+# `login_names`: variables that carry a login, named when this run had them and
+# a new terminal would not.
+[provision.fresh_terminal]
+enabled = true
+keep = ["HOME", "USER", "LOGNAME", "PATH", "SHELL", "TERM", "LANG"]
+command = ["{claude}", "-p", "--output-format", "json", "--max-turns", "1", "{prompt}"]
+prompt = "Reply with the single word: ok"
+timeout_seconds = 120
+temporary_markers = ["429", "rate limit", "quota", "overloaded"]
+login_names = [
+  "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+  "GOOGLE_APPLICATION_CREDENTIALS", "CLOUDSDK_CONFIG",
+  "AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_BEARER_TOKEN_BEDROCK",
+]
+# Say so when the first interactive claude will ask for a theme and folder trust
+# (not a login), read from Claude Code's own state file.
+first_start_notes = true
+
+[provision.inventory]
+# How long each inventory command below may take.
+command_timeout_seconds = 45
+# How long a binary in [provision.inventory.binaries] may take to print its
+# version.
+version_timeout_seconds = 20
+show_binaries = true
+show_versions = true
+show_auth = true
+show_settings = true
+show_mcp_servers = true
+show_env = true
+# Environment variables reported (values are redacted by key name).
+env_report_patterns = [
+    "ANTHROPIC_*", "CLAUDE_*", "CLOUD_ML_REGION", "GOOGLE_CLOUD_*",
+    "GOOGLE_APPLICATION_CREDENTIALS", "CLOUDSDK_*", "AWS_REGION", "MCP_*",
+]
+# A variable whose *name* matches any of these is reported as present-but-masked,
+# whatever its value looks like. Belt and braces on top of value redaction.
+sensitive_name_patterns = [
+    "*KEY*", "*TOKEN*", "*SECRET*", "*PASSWORD*", "*PASSWD*",
+    "*CREDENTIAL*", "*AUTH*", "*SESSION*", "*COOKIE*", "*PRIVATE*",
+]
+# Binaries listed in the inventory, with the flag that prints their version.
+[provision.inventory.binaries]
+claude = ["--version"]
+gcloud = ["--version"]
+node = ["--version"]
+npm = ["--version"]
+python = ["--version"]
+uv = ["--version"]
+git = ["--version"]
+[provision.inventory.commands]
+claude_mcp_list = ["{claude}", "mcp", "list"]

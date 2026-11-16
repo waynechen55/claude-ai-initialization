@@ -1,0 +1,591 @@
+####################################################################
+# initialize-claude-ai :: phase 2 authentication
+#
+# Three backends are supported and each can be enabled independently:
+#
+#   google-cloud   gcloud user / ADC / service-account / workload identity
+#   claude-oauth   claude.ai sign-in for the Claude Code CLI (and website)
+#   anthropic-api  a raw API key or auth token
+#
+# Select them with --auth-backend, or with auth.backends below.
+# 'all' expands to every backend listed in auth.available.
+#
+# NO CREDENTIAL IS EVER STORED IN THIS FILE.  Credentials are named by
+# reference (env:NAME, file:/path, keyring:service/user, gcloud-adc, prompt:)
+# and fetched at run time.  See initialize_claude_ai/core/secrets.py.
+####################################################################
+
+[auth]
+available = ["google-cloud", "claude-oauth", "anthropic-api"]
+# Which backends to attempt. "all" == every entry in `available`.
+backends = ["all"]
+# Backends that must succeed for the phase to pass. Empty means "at least one".
+required = []
+# Which interactive sign-in flow every backend uses. One setting for the whole
+# run, so that --headless means the same thing for every credential.
+#
+# Every sign-in ends with a code pasted back by default, display or not. The
+# alternative, a loopback redirect, hands the result to a listener on
+# localhost -- and nothing here can check beforehand that the browser will get
+# back there: which machine the page ends up on, an organisation's sign-in page
+# or browser policy that stops it returning to http://localhost, a port in use.
+# A display proves only that a browser can be drawn. When the redirect does not
+# arrive, the sign-in waits with nothing to paste. The code works wherever
+# signing in works.
+#
+#   auto      take a pasted code; where a browser can be shown, the URL is
+#             opened in it for you (auth.signin.open_url).
+#   headless  take a pasted code and open nothing: you carry the URL to any
+#             browser, on any machine. --headless.
+#   browser   the loopback redirect, for a browser known to reach this machine.
+#             --browser-loopback-redirect.
+#
+# The two flags are alternatives; giving both is refused rather than letting the
+# later one quietly win.
+browser_mode = "${INITIALIZE_CLAUDE_AI_AUTH_BROWSER_MODE:-auto}"
+# Re-authenticate even when detection already found a valid credential.
+# --force-auth is the command-line form of setting this to true. Detection runs
+# either way: what this changes is whether the result is acted on.
+force = false
+
+# Throw the existing credential away before signing in again.
+# --force-auth-with-reset is the command-line form, and it sets `force` too.
+#
+# Why this is not simply what --force-auth does: forcing a sign-in *adds* a
+# fresh credential and can be repeated all day, while clearing one takes a
+# credential away from the whole machine -- `gcloud auth revoke` logs out every
+# tool on the host that reads that account, not only Claude Code. The two are
+# different promises, so they are different flags, and this one is the longer
+# thing to type.
+#
+# It is also what to reach for when --force-auth "did not ask me anything":
+# gcloud and claude.ai both re-use a session the provider still holds, so the
+# browser rubber-stamps the login without a password. Clearing the credential
+# first is what makes the sign-in a real one. Note that the provider's own
+# cookie lives in the browser, not here -- see auth.reset_browser_profile.
+#
+# Guarded three ways: it never runs without being asked for by name, it asks
+# for confirmation first (--auto-agree answers yes, a non-interactive session
+# answers no), and --dry-run reports what it would remove without removing it.
+reset = false
+# Move credential files aside as <name>.<timestamp>.bak instead of deleting
+# them. Off, unlike the settings.json writer's own backups, because a backup of
+# a credential is still a credential: leaving a readable copy beside the file
+# somebody just asked to have cleared defeats the request. Turn it on if you
+# would rather have the way back than the clean slate.
+reset_backup = false
+reset_backup_suffix = "%Y%m%d-%H%M%S"
+# Seconds allowed for one revoke/logout command. These are quick, or broken.
+reset_timeout_seconds = 120
+# Also delete the browser profile this program keeps under its state directory,
+# so the sign-in that follows starts with no cookie for the provider -- which is
+# the difference between being asked who you are and being waved through. Only
+# this program's own profile is touched: your everyday browser profile is yours,
+# and clearing it would sign you out of everything else you have open. A reset
+# also turns auth.browser.clean_profile from 'auto' into 'always', because a
+# freshly emptied profile is no use if the sign-in does not open it.
+#
+# A pasted-code sign-in (--headless) opens no browser at all -- you carry the
+# URL yourself -- so the emptied profile is not used by itself, and a browser
+# you paste the URL into that is still signed in would wave you through. So
+# after a reset the URL handed over signs that browser out first, where the
+# provider allows it (auth.signin.sign_out_first); otherwise you are told, and
+# given commands to run for a sign-in that asks: this profile, a private
+# window, or signing out first. See auth.signin.open_url to have the URL opened
+# for you instead.
+reset_browser_profile = true
+
+# Seconds to wait for a human to complete an interactive login. Generous on
+# purpose: this is a person moving a URL to another machine, signing in, maybe
+# passing 2FA, and carrying a code back. Expiring mid-flow kills gcloud while
+# the browser still says "success", which reads exactly like a hang. 0 waits
+# for as long as it takes.
+interactive_timeout_seconds = 1800
+# Spend a token on a real round-trip to prove the credential works.
+# Disable in CI to avoid the cost; presence checks still run.
+live_probe = true
+
+# ------------------------------------------------------------------
+# Getting the sign-in URL back out of the terminal
+#
+# A pasted-code sign-in prints a URL of several hundred characters and asks for
+# it to be opened somewhere else. gcloud prints it unbroken and lets the
+# terminal wrap it, which tmux and a resized window will not give back whole;
+# the claude CLI hard-wraps it before printing, so no terminal can. Rather than
+# ask anyone to select it, the sign-in is run on a pseudo-terminal this program
+# holds the other end of, the URL is recovered from the stream, and it is put
+# where it can be reached without selecting anything.
+#
+# See initialize_claude_ai/authenticate/signin_url.py.
+# ------------------------------------------------------------------
+[auth.signin]
+# Sit between the terminal and the sign-in so its output can be read.
+#   auto    whenever there is a terminal to sit in the middle of
+#   always  / never -- `never` hands the terminal straight to the child, as
+#           before, and nothing is captured.
+pty = "${INITIALIZE_CLAUDE_AI_AUTH_SIGNIN_PTY:-auto}"
+# Size of the pseudo-terminal the sign-in sees. 0 means "the same as this
+# terminal", which is what keeps its output looking the way it was designed to.
+# Setting columns very wide stops a child that hard-wraps from breaking the URL
+# on screen, at the cost of every box it draws being that wide too.
+columns = 0
+rows = 0
+# What counts as the sign-in URL in that stream. Deliberately demanding: a short
+# link in a banner or a docs URL in a warning is not what anyone is waiting for.
+url_pattern = "https://\\S{60,}"
+# Where to put it, in order; every one that works is used. Both are silent --
+# the child owns the screen while it is waiting.
+#   file       write it to paths.state_dir/url_file, private, removed afterwards
+#   clipboard  pipe it to the first tool below that is installed
+deliver = ["file", "clipboard"]
+url_file = "sign-in-url.txt"
+# How long a clipboard tool may take to take the copy.
+clipboard_timeout_seconds = 10
+# Open the captured URL in the browser found for this run (auth.browser; this
+# program's own profile when it keeps one). It needs a display, a browser, and
+# the capture (pty). You sign in there and paste the code the page shows back.
+# Anything else, including "reset" (once the default, and the cause of a
+# browser opening under --headless after --force-auth-with-reset), means never.
+#   auto    unless --headless (auth.browser_mode = headless), which means you
+#           open the URL yourself
+#   always  every pasted-code sign-in, --headless included
+#   never   leave opening the URL to you
+open_url = "${INITIALIZE_CLAUDE_AI_AUTH_SIGNIN_OPEN_URL:-auto}"
+# Seconds to watch that browser for an immediate failure before going back to
+# the sign-in. It keeps running either way; this only decides what is logged.
+open_settle_seconds = 2
+
+# Whether the URL a pasted-code sign-in hands over first goes through the
+# provider's sign-out page, which then continues to the sign-in. Every copy you
+# can reach is that URL: the file, the clipboard, and the one on screen, which
+# is repainted as it passes through this program's terminal proxy.
+# The browser you paste it into is out of this program's reach, so a reset
+# alone leaves it signed in, and it lets you through with no password. The
+# provider's own sign-out is the one thing that reaches it, wherever it is.
+# Needs auth.<backend>.signout_url and signout_continue_param, and the capture
+# (auth.signin.pty); without the capture the sign-in's own URL is shown as is.
+#   reset   after --force-auth-with-reset
+#   always  every pasted-code sign-in
+#   never   hand over the sign-in URL unchanged
+sign_out_first = "${INITIALIZE_CLAUDE_AI_AUTH_SIGNIN_SIGN_OUT_FIRST:-reset}"
+# Your organisation's sign-out page, for an account that signs in through the
+# organisation's own sign-in page (single sign-on). The provider's sign-out
+# ends only the provider's session; that page keeps its own, on its own site,
+# and signs you straight back in with no password. Set, it is the first stop of
+# the URL handed over whenever sign_out_first applies: {continue} is replaced
+# with the rest of the chain, URL-encoded, so the page must be willing to
+# continue there (most identity providers want that address allowed first).
+# There is no default: every organisation's page is its own. A private window
+# clears it too, with nothing to configure.
+#   e.g. https://<your-sign-in-host>/<sign-out-path>?<its-continue-param>={continue}
+idp_signout_url = "${INITIALIZE_CLAUDE_AI_AUTH_SIGNIN_IDP_SIGNOUT_URL:-}"
+
+# Environment differences for the sign-in command in a pasted-code flow only.
+# Phase 2 exports BROWSER to every child so the redirect flow opens the right
+# browser; left in place, a sign-in command (or a library under it) that opens
+# whatever BROWSER names would open it under --headless too. Each name is set
+# to its value, or removed when the value is empty. BROWSER defaults to a
+# command that accepts the URL and does nothing, which every BROWSER reader
+# (Python's webbrowser, xdg-open, node openers) treats as done -- removing it
+# instead would let them fall back to guessing a browser.
+[auth.signin.paste_env]
+BROWSER = "${INITIALIZE_CLAUDE_AI_AUTH_SIGNIN_PASTE_BROWSER:-true}"
+
+# Clipboard tools, best first. The key is the binary to look for, the value the
+# command to run with the URL on its stdin. The first one installed wins, and
+# may take auth.signin.clipboard_timeout_seconds to take the copy.
+[auth.signin.clipboard]
+wl-copy = ["wl-copy"]
+xclip = ["xclip", "-selection", "clipboard"]
+xsel = ["xsel", "--clipboard", "--input"]
+pbcopy = ["pbcopy"]
+"clip.exe" = ["clip.exe"]
+# The environment variable each tool above needs to reach a clipboard at all.
+# A tool whose variable is unset is skipped rather than tried -- wl-copy on an
+# X display only fails -- and the value (the display) is named when the URL is
+# copied, because that clipboard may not be the one you are pasting from. A
+# tool not listed here needs nothing.
+[auth.signin.clipboard_needs]
+wl-copy = ["WAYLAND_DISPLAY"]
+xclip = ["DISPLAY"]
+xsel = ["DISPLAY"]
+
+# ------------------------------------------------------------------
+# The browser an interactive sign-in opens
+#
+# This program never opens a browser itself: gcloud and the claude CLI do. What
+# it can decide is what those two inherit -- which browser BROWSER names, and
+# whether what is typed into that browser reaches the page at all. The second is
+# a real question on a host with an X display and no desktop session behind it;
+# initialize_claude_ai/authenticate/browser.py explains why, and what the
+# symptom looks like from the operator's side.
+#
+# Everything here applies to every value of auth.browser_mode. The mode decides
+# which flow is used; these decide whether the browser at the end of it works.
+# ------------------------------------------------------------------
+[auth.browser]
+# A command to use verbatim, with %s standing in for the URL -- the same shape
+# the BROWSER variable has always had, so an operator who already knows that
+# convention knows this one. --browser. Empty means "find one below", which is
+# the ordinary case.
+command = "${INITIALIZE_CLAUDE_AI_AUTH_BROWSER:-${BROWSER:-}}"
+# Binaries that count as a browser, in preference order. Firefox leads because
+# it is packaged by every distribution in this program's reach, ships the same
+# build to all of them, and needs no sandbox concession to run as root -- the
+# three things that decide whether a sign-in page renders at all on the hosts
+# this runs on. xdg-open is deliberately absent: it is a launcher, not a
+# browser, and on a machine with nothing registered it succeeds at opening
+# nothing. It appears under `openers` instead, where its real role is.
+candidates = [
+    "firefox", "firefox-esr", "firefox-bin",
+    "chromium", "chromium-browser",
+    "google-chrome-stable", "google-chrome",
+    "brave-browser", "vivaldi-stable",
+    "microsoft-edge-stable", "microsoft-edge",
+    "epiphany", "falkon", "konqueror",
+]
+# Tried when no candidate is on PATH. These reach a browser this side of the
+# machine cannot see: the Windows half of a WSL install, a flatpak the host
+# registered, a desktop handler with no binary of its own.
+openers = ["wslview", "xdg-open", "gio", "open"]
+# Openers that consult BROWSER themselves. Naming one of these in BROWSER makes
+# it call itself for ever, so when the search falls through to one of them the
+# variable is left alone and the opener is used as the host intended. wslview is
+# absent, which is why exporting it works and is the standard WSL recipe.
+openers_reading_browser_variable = ["xdg-open", "gio"]
+# Export BROWSER so gcloud and the claude CLI open the browser chosen here
+# rather than each guessing separately. An operator who has already exported
+# BROWSER is left alone -- the interpolation above adopts their value.
+set_browser_variable = true
+
+# Sign in in a profile belonging to this program rather than the operator's own.
+#   auto     only where the default profile is unlikely to be usable: no
+#            desktop session, or running as root.
+#   always   /  never
+# A dedicated profile has no extension filtering the sign-in form and no other
+# Google account already signed in -- the "it opened in the wrong profile"
+# failure that --headless is usually reached for as a workaround.
+clean_profile = "${INITIALIZE_CLAUDE_AI_AUTH_BROWSER_PROFILE:-auto}"
+
+# Make typed text actually reach the page.
+#   auto     only where the failure is possible: an X display with no desktop
+#            session behind it, and no input method configured.
+#   always   apply it regardless. Reach for this if the sign-in form loses what
+#            you type -- it is the single most likely cure.
+#   never    leave the toolkit environment exactly as found. Correct on a
+#            desktop running ibus, fcitx or any other real input method, where
+#            overriding it would break composing non-Latin text.
+input_method_fix = "${INITIALIZE_CLAUDE_AI_AUTH_BROWSER_IM_FIX:-auto}"
+
+# What the fix sets, on the sign-in subprocess and so on the browser it
+# launches. GTK's own built-in context turns keystrokes into ordinary key
+# events; the XIM bridge GTK would otherwise fall back to needs an XIM server,
+# and on a host like this there is none listening.
+[auth.browser.input_method_env]
+GTK_IM_MODULE = "gtk-im-context-simple"
+QT_IM_MODULE = "simple"
+XMODIFIERS = "@im=none"
+
+# How to ask each browser family for a profile directory of its own. The key is
+# matched as a substring against the browser's file name, longest key first, so
+# `chrome` covers google-chrome and google-chrome-stable alike. {profile} is
+# replaced with the directory. A browser matching nothing here simply runs
+# without profile arguments.
+[auth.browser.profile_args]
+firefox = ["--profile", "{profile}", "--no-remote"]
+chromium = ["--user-data-dir={profile}"]
+chrome = ["--user-data-dir={profile}"]
+brave = ["--user-data-dir={profile}"]
+vivaldi = ["--user-data-dir={profile}"]
+edge = ["--user-data-dir={profile}"]
+
+# How to ask each browser family for a private window, matched the same way.
+# Used only in advice: when a reset cannot open the sign-in in this program's
+# own profile, you are shown the command that opens the URL with no session in
+# it. A browser matching nothing here gets the advice without a command.
+[auth.browser.private_args]
+firefox = ["--private-window"]
+chromium = ["--incognito"]
+chrome = ["--incognito"]
+brave = ["--incognito"]
+vivaldi = ["--incognito"]
+edge = ["--inprivate"]
+
+# ------------------------------------------------------------------
+# Google Cloud
+# ------------------------------------------------------------------
+[auth.google_cloud]
+enabled = true
+# How to acquire the credential:
+#   user               interactive `gcloud auth login`
+#   service-account    activate the key file named by service_account_key_ref
+#   impersonate        act as impersonate_service_account, from your own credential
+#   adc-only           application-default login, without a CLI login
+#   workload-identity  an external account config is already in place
+#   metadata           the GCE/GKE metadata server already provides one
+#   auto               pick from what is configured and what the host looks like
+method = "auto"
+# Account to make active, as --gcloud-user-account. Empty means "keep whatever
+# gcloud already has"; when set, an active account that differs counts as
+# unauthenticated, so phase 2 signs in rather than proceeding as the wrong user.
+account = "${INITIALIZE_CLAUDE_AI_GCP_ACCOUNT:-${GOOGLE_CLOUD_USER_ACCOUNT:-}}"
+# The project this run is for, as --gcloud-project (--vertex-project), which
+# sets provision.vertex.project to the same value: one project, named once, for
+# both the sign-in and what gets provisioned afterwards. Signing in is not
+# project-neutral -- quota, API enablement and Vertex model access are all
+# charged to a project -- so when this is set every gcloud command below carries
+# it (see project_args) and gcloud's own active project is pointed at it.
+project = "${GOOGLE_CLOUD_PROJECT:-${CLOUDSDK_CORE_PROJECT:-${ANTHROPIC_VERTEX_PROJECT_ID:-}}}"
+# Application Default Credentials are what the Vertex AI SDK actually reads.
+configure_adc = true
+# Reference to a service-account key file, as --gcloud-service-account-file.
+# Never the key itself: gcloud opens the file, the contents never pass through
+# this process. Setting it selects the 'service-account' method, which wins the
+# tie-break against the impersonation below -- so the two are alternatives, and
+# giving both on the command line is refused rather than silently resolved.
+service_account_key_ref = "${INITIALIZE_CLAUDE_AI_GCP_SA_KEY_REF:-}"
+# Impersonate a service account using the logged-in user's credentials, as
+# --gcloud-service-account. Setting it selects the 'impersonate' method, and an
+# already-authenticated host that is not impersonating it is re-authenticated.
+# An identity, not a credential: the key never leaves Google.
+impersonate_service_account = "${INITIALIZE_CLAUDE_AI_GCP_IMPERSONATE:-}"
+# gcloud's config impersonation reaches the gcloud CLI only; Claude Code reads
+# the application-default credential.  With this on, that credential is written
+# impersonating the account too (commands.adc_impersonate, an interactive
+# sign-in), unless it already does -- read from adc_file's type and
+# impersonation URL, never its tokens.
+impersonate_adc = true
+adc_file = "${CLOUDSDK_CONFIG:-${HOME}/.config/gcloud}/application_default_credentials.json"
+quota_project = ""
+# APIs phase 3 needs; checked (not enabled) unless enable_apis is true.
+required_apis = ["aiplatform.googleapis.com"]
+enable_apis = false
+# Where to sign out of the provider in a browser. The reset revokes this
+# machine's credential, but only this page ends the browser's session. Empty
+# offers none.
+signout_url = "${INITIALIZE_CLAUDE_AI_GCP_SIGNOUT_URL:-https://accounts.google.com/Logout}"
+# The query parameter signout_url follows once the browser is signed out. With
+# it, a pasted-code sign-in after a reset hands over signout_url?<param>=<the
+# sign-in URL>: whichever browser it is pasted into is signed out of Google
+# first (every account in it), then lands on the sign-in (with reset_prompt
+# below; an organisation's own sign-in page needs auth.signin.idp_signout_url).
+# Google follows it only to its own sign-in host, which is also the only host
+# it is used for. See auth.signin.sign_out_first. Empty turns the
+# chaining off and leaves the advice.
+signout_continue_param = "${INITIALIZE_CLAUDE_AI_GCP_SIGNOUT_CONTINUE_PARAM:-continue}"
+# prompt values added to the sign-in behind that sign-out (space-separated;
+# those already there are kept). Signing out does not make Google forget the
+# accounts used in that browser, and it may carry on with one of them unasked
+# -- straight to an organisation's sign-in page, for a single sign-on account.
+# select_account shows the account chooser instead, with "Use another account"
+# to type an email. Empty adds nothing.
+reset_prompt = "${INITIALIZE_CLAUDE_AI_GCP_RESET_PROMPT:-select_account}"
+
+# Appended to every command below when project is set, so the sign-in, the
+# tokens it mints and the API checks all happen against the named project rather
+# than whichever one gcloud was last pointed at. --project is a gcloud-wide flag
+# accepted by every command, and it beats CLOUDSDK_CORE_PROJECT and the active
+# configuration for that one invocation. Set it to [] to leave gcloud's own
+# project resolution alone.
+project_args = ["--project", "{project}"]
+# Commands that must not get it: the two that set the project take it as their
+# argument, and the two that read one would otherwise be handed the answer and
+# echo it straight back -- which would hide the fact that gcloud's own project
+# is unset or different, and that is exactly what phase 2 is checking.
+project_args_skip = [
+    "get_project", "set_project", "set_quota_project",
+    # Revoking is not a project-scoped act -- the credential belongs to an
+    # account, and naming a project here would only suggest otherwise.
+    "revoke", "revoke_adc",
+]
+
+# What `gcloud config get-value` prints for a property that is not set. Read as
+# "no value" by every caller, so a missing project is never taken for a project
+# called "(unset)".
+unset_values = ["(unset)", "None"]
+
+[auth.google_cloud.commands]
+# Command templates. {gcloud} is substituted with the resolved binary.
+list_accounts = ["{gcloud}", "auth", "list", "--format=json"]
+active_account = ["{gcloud}", "config", "get-value", "account", "--quiet"]
+active_impersonation = ["{gcloud}", "config", "get-value", "auth/impersonate_service_account", "--quiet"]
+get_project = ["{gcloud}", "config", "get-value", "project", "--quiet"]
+set_impersonation = ["{gcloud}", "config", "set", "auth/impersonate_service_account", "{account}"]
+adc_impersonate = ["{gcloud}", "auth", "application-default", "login", "--quiet", "--impersonate-service-account={account}"]
+adc_impersonate_headless = ["{gcloud}", "auth", "application-default", "login", "--no-launch-browser", "--impersonate-service-account={account}"]
+# --update-adc writes the application-default credential too, so the separate
+# adc_login below is skipped whenever it is present: one sign-in, not two. Drop
+# it here to go back to two independent logins.
+login = ["{gcloud}", "auth", "login", "--update-adc", "--quiet"]
+# --no-launch-browser prints a URL and asks for the verification code shown at
+# the end of it. The alternative gcloud offers is --no-browser, which instead
+# prints a `gcloud auth login --remote-bootstrap=...` command to run on a
+# machine that has both a browser and gcloud >= 372; swap it in here if that
+# suits your hosts better. Do not add --quiet to either: it suppresses the very
+# prompt that reads the code back.
+login_headless = ["{gcloud}", "auth", "login", "--no-launch-browser", "--update-adc"]
+adc_login = ["{gcloud}", "auth", "application-default", "login", "--quiet"]
+adc_login_headless = ["{gcloud}", "auth", "application-default", "login", "--no-launch-browser"]
+activate_service_account = ["{gcloud}", "auth", "activate-service-account", "--key-file={key_file}"]
+set_account = ["{gcloud}", "config", "set", "account", "{account}"]
+set_project = ["{gcloud}", "config", "set", "project", "{project}"]
+set_quota_project = ["{gcloud}", "auth", "application-default", "set-quota-project", "{project}"]
+print_token = ["{gcloud}", "auth", "print-access-token"]
+print_adc_token = ["{gcloud}", "auth", "application-default", "print-access-token"]
+list_services = ["{gcloud}", "services", "list", "--enabled", "--format=json"]
+enable_service = ["{gcloud}", "services", "enable", "{service}"]
+# --force-auth-with-reset only. Revoking the *active* account rather than
+# passing --all: signing this machine out of one identity is what was asked
+# for, and taking every other account on the host with it is not. --quiet
+# answers the "you are about to revoke" prompt, which nothing is watching for.
+revoke = ["{gcloud}", "auth", "revoke", "--quiet"]
+revoke_adc = ["{gcloud}", "auth", "application-default", "revoke", "--quiet"]
+
+# How long each command above may run, keyed by the same name. A table whose
+# name ends in timeout_seconds is stretched by --timeout-scale like every other
+# timeout. A command with no entry here gets run.command_timeout_seconds; the
+# reset commands use reset_timeout_seconds and the sign-in commands
+# interactive_timeout_seconds, both under [auth].
+[auth.google_cloud.command_timeout_seconds]
+active_impersonation = 30
+active_account = 30
+get_project = 30
+list_accounts = 60
+set_account = 60
+set_project = 60
+set_impersonation = 60
+print_token = 90
+print_adc_token = 90
+set_quota_project = 90
+activate_service_account = 120
+list_services = 120
+enable_service = 300
+
+[auth.google_cloud.reset]
+# What --force-auth-with-reset clears, and in which order: the
+# application-default credential first, since it is the one Vertex and phase 3
+# actually read, then the CLI login that can mint another one.
+commands = ["revoke_adc", "revoke"]
+# Nothing by path: gcloud owns the files under ~/.config/gcloud and reaching
+# into them behind its back is how a half-deleted credential store happens.
+# A service-account key named by service_account_key_ref is deliberately absent
+# too -- it is the operator's file, supplied by them, not ours to delete.
+paths = []
+paths_from = []
+
+# ------------------------------------------------------------------
+# claude.ai OAuth (Claude Code CLI + website session)
+# ------------------------------------------------------------------
+[auth.claude_oauth]
+enabled = true
+# The claude.ai account this machine should be signed in as, as
+# --claude-user-account. Reported as the identity, and checked against whatever
+# the CLI says -- but only advisory: the status output is prose, not a contract,
+# so a suspected mismatch warns instead of forcing a fresh sign-in.
+account = "${INITIALIZE_CLAUDE_AI_CLAUDE_ACCOUNT:-}"
+# Where an already-issued long-lived token may be read from.
+token_ref = "${INITIALIZE_CLAUDE_AI_CLAUDE_TOKEN_REF:-env:CLAUDE_CODE_OAUTH_TOKEN}"
+# Files that indicate an existing CLI session (checked for existence only --
+# never parsed for their contents).
+credential_paths = [
+    "${cfg:paths.claude_home}/.credentials.json",
+    "${HOME}/.config/claude/.credentials.json",
+]
+# Environment variable the CLI reads for a long-lived token.
+token_env_var = "CLAUDE_CODE_OAUTH_TOKEN"
+probe_prompt = "Reply with the single word: ok"
+probe_timeout_seconds = 120
+# The claude.ai web app itself -- reported so the operator knows where to sign in.
+web_login_url = "https://claude.ai/login"
+# As auth.google_cloud.signout_url. Empty by default: claude.ai publishes no
+# stable sign-out address, and a guessed one would be advice that fails.
+signout_url = "${INITIALIZE_CLAUDE_AI_CLAUDE_SIGNOUT_URL:-}"
+# As auth.google_cloud.signout_continue_param. Empty with no sign-out page.
+signout_continue_param = "${INITIALIZE_CLAUDE_AI_CLAUDE_SIGNOUT_CONTINUE_PARAM:-}"
+# As auth.google_cloud.reset_prompt; used only with a sign-out page.
+reset_prompt = "${INITIALIZE_CLAUDE_AI_CLAUDE_RESET_PROMPT:-}"
+# The variables that point Claude Code at another provider, where a claude.ai
+# sign-in is not used; the first one set (1/true/yes/on) is reported. The same
+# names phase 3 writes under provision.<backend>.env.
+third_party_switches = { vertex = "CLAUDE_CODE_USE_VERTEX", bedrock = "CLAUDE_CODE_USE_BEDROCK" }
+
+# Whether interactive_command (the CLI's /login) opens the browser itself and
+# takes a pasted code when the page shows one. true: wherever a browser can be
+# shown and --headless was not given, /login runs and opens it; setup-token is
+# for the operator carrying the URL. false: setup-token, and this program opens
+# its URL, as for every other backend.
+interactive_command_opens_browser = true
+# Mint a long-lived token (token_command, `claude setup-token`) instead of
+# storing a login.  For CI: the token is printed, never stored by Claude Code,
+# and every later session needs CLAUDE_CODE_OAUTH_TOKEN exported.
+long_lived_token = "${INITIALIZE_CLAUDE_AI_CLAUDE_LONG_LIVED_TOKEN:-false}"
+
+# Command templates. {claude} is substituted with the resolved binary. These
+# live under .commands because that is where AuthBackend.command() looks; a flat
+# key here resolves to an empty argv and the step is silently skipped.
+[auth.claude_oauth.commands]
+# `claude auth login` prints a URL and accepts a pasted code, and *stores* the
+# login where every later `claude` reads it.  `claude setup-token` only prints a
+# long-lived token: a `claude` started in a new terminal then has to log in
+# again unless CLAUDE_CODE_OAUTH_TOKEN is exported there -- so it is used only
+# when long_lived_token asks for one (CI), and the report says what to export.
+headless_command = ["{claude}", "auth", "login"]
+token_command = ["{claude}", "setup-token"]
+interactive_command = ["{claude}", "/login"]
+status_command = ["{claude}", "auth", "status"]
+# --force-auth-with-reset only: ends the CLI session, which is what makes the
+# next sign-in ask for an account again instead of resuming this one.
+logout_command = ["{claude}", "auth", "logout"]
+# Minimal round-trip that proves the credential is accepted upstream.
+probe_command = ["{claude}", "-p", "--output-format", "json", "--max-turns", "1", "{probe_prompt}"]
+
+# As [auth.google_cloud.command_timeout_seconds]; probe_command has its own
+# probe_timeout_seconds above.
+[auth.claude_oauth.command_timeout_seconds]
+status_command = 60
+
+[auth.claude_oauth.reset]
+commands = ["logout_command"]
+paths = []
+# The very files inspect() looks at, named rather than copied, so that clearing
+# and detecting can never fall out of step. A logout should remove them itself;
+# this is what makes "should" into "did".
+paths_from = ["credential_paths"]
+
+# ------------------------------------------------------------------
+# Direct Anthropic API credentials
+# ------------------------------------------------------------------
+[auth.anthropic_api]
+enabled = true
+# Two different credentials, carried by two different headers -- keeping them
+# apart is what lets a gateway token be sent as a bearer token rather than
+# being rejected as a malformed x-api-key. Ordered; first to yield a value wins,
+# and api_key_refs is tried before auth_token_refs.
+api_key_refs = ["env:ANTHROPIC_API_KEY"]
+auth_token_refs = ["env:ANTHROPIC_AUTH_TOKEN"]
+
+# Optional helper command Claude Code can call to mint a key on demand.
+api_key_helper = ""
+base_url = "${ANTHROPIC_BASE_URL:-https://api.anthropic.com}"
+version_header = "2023-06-01"
+# Cheapest authenticated endpoint: proves the key without spending tokens.
+probe_path = "/v1/models?limit=1"
+probe_timeout_seconds = 30
+
+# Header each credential kind travels in. Data, so a gateway that wants
+# something else is an edit here rather than a code change.
+[auth.anthropic_api.headers]
+api_key = "x-api-key"
+auth_token = "Authorization"
+auth_token_prefix = "Bearer "
+
+# Deliberately empty, and it is not an oversight. This backend never stores a
+# credential: api_key_refs and auth_token_refs are *references* to a key that
+# lives somewhere else -- an exported variable, a file the operator wrote, a
+# secret manager. Clearing a reference would mean deleting somebody else's
+# property, so --force-auth-with-reset reports that there is nothing here it
+# owns and says where the key is still coming from.
+[auth.anthropic_api.reset]
+commands = []
+paths = []
+paths_from = []

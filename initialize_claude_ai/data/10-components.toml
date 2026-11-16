@@ -1,0 +1,1140 @@
+####################################################################
+# initialize-claude-ai :: phase 1 component catalog
+#
+# Phase 1 is data-driven: this file is the whole installation plan.  Adding a
+# tool means adding a [[components]] block, never editing Python.
+#
+# Each component has:
+#   [[components.verify]]  one or more checks proving it is present AND working
+#   [[components.install]] ordered strategies, tried until one succeeds
+#
+# verify.kind:  binary | python_module | node_package | file | command
+# install.kind: system | brew | flatpak | snap | npm | pip | uv_tool | script
+#               | download | command | manual
+#
+# 'system' maps the native package manager key (apt/dnf/zypper/pacman/apk/...)
+# to the package names that distribution uses.  A manager with no entry is
+# simply skipped and the next strategy is tried.
+####################################################################
+
+[install]
+# Component groups selected by default. Override with --install-only /
+# --install-skip / this key.
+default_groups = ["base", "runtime", "claude", "cloud", "browser"]
+# --install-only / --install-skip, made permanent. Component keys or group
+# names; 'only' wins over default_groups, and the command line wins over both.
+only = []
+skip = []
+# Groups that are nice to have; a failure never fails the phase.
+optional_groups = ["browser", "desktop", "mcp-tooling", "mcp-runtimes"]
+# --install-prefetch: also install, now, the toolchains phase 4 launches MCP
+# servers with, so it does not find them missing later.
+#   none       only the groups selected above
+#   launchers  plus the component behind the first word of every command in
+#              demand_sources below (npx -> npm, uvx -> uv, ...), except a
+#              component whose entry says prefetch = false
+#   all        plus every component in prefetch_groups, prefetch = false or not
+# What is added this way is always optional: it never fails the phase.
+# --install-only wins over this (it names exactly what to install), and
+# --install-skip wins over everything.
+prefetch = "${INITIALIZE_CLAUDE_AI_INSTALL_PREFETCH:-launchers}"
+# Settings whose values are command templates (argument vectors) that a later
+# phase runs. Read, never changed: adding a launcher there is all it takes for
+# 'launchers' above to prefetch whatever runs it.
+demand_sources = ["mcp.packages.launchers", "mcp.bridge.adapters"]
+# The groups 'all' above adds.
+prefetch_groups = ["mcp-runtimes"]
+# Whether phase 4 may install a component on demand (--mcp-provision-missing)
+# when its catalog entry does not say. An entry's own on_demand wins.
+on_demand_default = true
+# Seconds allowed for asking a tool where it puts the programs it installs
+# (a component's bin_dir_queries, e.g. `go env GOPATH`).
+bin_dir_query_timeout_seconds = 25
+# Which interpreter the Python-module checks import with.  Normally the detected
+# one is used and this is never consulted; it is here for a machine where the
+# interpreter that should own the SDKs is not the one on PATH.  Left as the bare
+# name because that is what this has always fallen back to -- naming it here at
+# least makes the fallback visible and overridable rather than a literal buried
+# in install/verify.py.
+python_executable = "${INITIALIZE_CLAUDE_AI_INSTALL_PYTHON:-python3}"
+# Refresh package metadata once before the first system install.
+refresh_package_index = true
+# Seconds allowed for a single package-manager transaction.
+package_timeout_seconds = 900
+# Seconds allowed for a download or install script.
+download_timeout_seconds = 600
+# Seconds allowed for creating venv_path below.
+venv_timeout_seconds = 300
+# Seconds allowed for asking a tool its version (a component's version_args).
+version_timeout_seconds = 25
+# Seconds allowed for asking an interpreter where packages go, and for the
+# import check that proves a Python component loads.
+python_probe_timeout_seconds = 30
+python_import_timeout_seconds = 60
+# Where python packages go.
+#   auto    system, unless the interpreter is marked externally managed under
+#           PEP 668 -- openSUSE, Debian, Fedora, Arch and Homebrew all are --
+#           in which case a virtualenv, which is the one target that installs
+#           without arguing with the distro's package manager.
+#   system  into the interpreter itself, --user unless already in a virtualenv
+#   venv    always venv_path, created from the interpreter running this program
+#   user    always pip --user (uv has no equivalent, so pip is used)
+python_target = "auto"          # auto | system | venv | user
+# Built with the interpreter running initialize-claude-ai, not with whichever
+# python3 is first on PATH: phase 4 imports claude_agent_sdk in-process, and a
+# wheel with a compiled extension will not load across minor versions.
+venv_path = "${cfg:paths.state_dir}/venv"
+# --break-dependencies: install into a PEP-668 externally managed interpreter
+# anyway (Homebrew, openSUSE, Fedora, Debian). Ignored inside a virtualenv,
+# where nothing is being broken.
+allow_break_system_packages = false
+# --force-install: run the install strategies even when verification already
+# passes, in each manager's reinstalling form. Slow and bandwidth-hungry; the
+# point is to repair a half-installed or corrupted toolchain.
+force = false
+# --downgrade: resolve pip/npm package names through [install.pins] below.
+downgrade = false
+# Prefer 'uv pip' when uv is available (much faster, same semantics).
+prefer_uv = true
+# --force-install repairs the copy in use, through whoever installed it: the
+# package that owns the file or provides the command, a strategy whose own
+# folders hold it (owns_paths, adds_bin_dir), or a kind recognised from the
+# path ([install.ownership]).  Strategies that would install a second copy
+# beside it are not run; an owner with no in-place form (reinstall_argv /
+# reinstall_shell) keeps what is there.  npm's "npm22" on a machine with npm26,
+# gcloud's script refusing its own folder, and nvm putting a second node beside
+# /usr/bin/node all came from rerunning fresh-install recipes.  false: every
+# strategy in catalog order, as before.
+reinstall_owner_only = true
+# A reinstall is CHANGED only when the binary in use changed (its file, inode,
+# change time or version); otherwise "reported success, but the copy in use did
+# not change" -- node was CHANGED while nothing had touched /usr/bin/node.
+changed_needs_proof = true
+# What a step costs in disk is asked before it runs.  A reinstall needs the
+# folder holding the copy times its strategy's space_factor (one that stages a
+# copy beside it declares 2), or the installed size of its owning packages
+# (<mgr>.installed_size), plus space_margin_mb; one that does not fit is not run
+# -- "kept", reported OK.  A fresh install with less than space_margin_mb free
+# where it writes is not attempted.  gcloud's in-place reinstall filled a disk
+# with just over 1 GB free, and every later step failed.
+check_space = true
+space_margin_mb = 256
+# What a failed reinstall left next to the folder it owns is removed only when
+# it carries this program's marker (owned_marker): a name proves nothing.
+# gcloud's own reinstall built google-cloud-sdk.staging, failed activating it,
+# and the staging copy was deleted by its name -- gcloud was gone.  Folders
+# another tool left are reported, never deleted.
+clean_failed_step_leftovers = true
+deleting_needs_ownership = true
+owned_marker = ".initialize-claude-ai-owned"
+# A failed step must leave the tool working: when it worked before and does not
+# now, a runnable copy the step left beside it (its staging, the tool's own
+# backup) is put back; what stood there is kept as <folder>.broken-<time>.  A
+# copy runs when `<tool> tool_runs_args` exits 0.
+restore_after_failed_step = true
+tool_runs_args = ["--version"]
+tool_runs_timeout_seconds = 60.0
+# The first command that hits a full disk stops the phase: the remaining
+# components are "not attempted: the disk is full", and one verdict names it.
+# A full disk is blamed only on the step whose own command hit it.
+stop_on_full_disk = true
+# Lines left out of an installer's own last words (progress bars, percentages).
+progress_line_pattern = '^[\s#=>.*-]*(\d{1,3}(\.\d+)?%)?[\s#=>.*-]*$'
+# A downloaded "install script" that starts with one of these is a web page,
+# never run: claude.ai/install.sh once served HTML, and bash ran it.
+script_web_page_markers = ["<!doctype html", "<html", "<head>", "<body"]
+# What the MCP servers Claude Code starts from here run is installed too: the
+# command of every entry in ./.mcp.json and in Claude Code's own configuration
+# (local and user scope), and what a client bridge runs for every call (its
+# manifest's client).  Only when this machine lacks it, from this catalog --
+# or a client's own `install` steps ([mcp.discovery.clients.<name>]) -- and
+# optional like any prefetch; a component with prefetch = false is checked,
+# never installed.  What nothing here installs is named with the run that
+# finds or replaces its server.  A copied .mcp.json named github-mcp-server and
+# a client bridge called osc on a machine that had neither.
+demand_from_entries = true
+# Before that: an entry launched through an installer's private launcher (a
+# `uv tool` or pipx environment, an npm global module -- mcp.launch_form) is
+# rewritten to the package's portable launch (uvx / npx -y) when that launcher
+# is here.  bugzilla-opensuse-org ran another machine's
+# .../uv/tools/mcp-bugzilla/bin/mcp-bugzilla, a script bound to that install,
+# and could never start where .mcp.json was copied.
+portable_launchers = true
+
+# Program variables (ICA_MCP_*) that registered entries read, given this
+# machine's value.  .mcp.json writes every absolute path as
+# ${ICA_MCP_UVX:-/root/.local/bin/uvx}: the default belongs to the machine that
+# wrote it, and on the next one Claude Code said "ENOENT: posix_spawn
+# '${ICA_MCP_UVX}'" while uvx sat in /usr/bin.  A variable is set only when the
+# path an entry would get here does not exist, only to a path found the way the
+# program names them (a configured root, a launcher, a binary it recorded or
+# finds on PATH) that serves every entry reading it, and never over a value
+# already set where a new terminal's Claude Code reads it.
+#   persist_to          settings (Claude Code's settings.json env, read by a
+#                       new terminal) | env_file (this program's env.sh) | both
+#   check_with_claude   ask Claude Code itself (`claude mcp get`) whether each
+#                       entry reading a variable set here now connects
+[install.machine_paths]
+enabled = true
+persist_to = "settings"
+check_with_claude = true
+# .mcp.json travels; a machine's startup files do not.  Every CA variable a new
+# terminal of any kind (login shell, terminal window) or Claude Code's settings
+# set to a file that cannot work is brought back to the system's own bundle,
+# through the one per-machine writer: a login shell's ~/.profile exported a
+# deleted /tmp SSL_CERT_FILE, and every Python server's tools failed there.
+repair_trust = true
+
+[install.ownership]
+# The installer a binary belongs to, told by where its real file lives -- when
+# no strategy's folders and no package manager claim it.
+# Most enclosing first (Homebrew's node keeps its npm in a node_modules); a
+# later match wins only when it is a way the component installs.
+path_markers = { brew = ["/homebrew/", "/linuxbrew/", "/Cellar/", "/Caskroom/"], npm = ["/node_modules/"], snap = ["/snap/"], flatpak = ["/flatpak/"], uv_tool = ["/uv/tools/"] }
+# Strategy kinds whose forcing form reinstalls the same copy in place.
+# A script strategy says so itself: reinstalls_in_place = true (it overwrites
+# its own copy when run again), or reinstall_argv / reinstall_shell.
+in_place_kinds = ["system", "brew", "npm", "pip", "uv_tool", "snap", "flatpak", "download"]
+# A strategy folder named like this (adds_bin_dir = ~/google-cloud-sdk/bin) is
+# inside the installation; its parent is what the strategy owns.
+bin_folder_names = ["bin", "sbin"]
+
+[install.commands]
+# Package-manager command templates. {packages} expands to the package list.
+# Anything unusual about a distro belongs here, not in the Python code.
+#
+# Three optional keys support --force-install and --break-dependencies:
+#   <mgr>.install_force    complete replacement command (a different subcommand)
+#   <mgr>.force_flags      appended to <mgr>.install (an extra flag)
+#   <mgr>.unmanaged_flags  appended when overriding PEP 668
+# npm.query lists what is installed globally, as JSON, for the node_package
+# check; its first word is replaced by the npm that was actually found.
+# A manager with neither forcing key simply installs normally under
+# --force-install: nothing is invented on its behalf.
+#
+# Asking the system what it has (read-only; each prints package names, one per
+# line, or <key>_regex picks the name out of a line):
+#   <mgr>.owner            the installed package owning {path}
+#   <mgr>.provider         the installed package providing {capability} (npm -> npm26)
+#   <mgr>.available        packages the repositories offer named like {query}
+#   <mgr>.installed_size   the installed size of {package} (installed_size_unit
+#                          bytes each), for the space a reinstall needs
+#   <mgr>.missing_markers  how an install says a listed package does not exist;
+#                          then the provider, or the newest package matching the
+#                          component's package_patterns, is tried instead
+apt.install = ["apt-get", "install", "-y", "--no-install-recommends"]
+apt.force_flags = ["--reinstall"]
+apt.refresh = ["apt-get", "update"]
+apt.env = { DEBIAN_FRONTEND = "noninteractive" }
+apt.owner = ["dpkg-query", "-S", "{path}"]
+apt.owner_regex = '^([^:,\s]+)'
+apt.installed_size = ["dpkg-query", "-Wf", "${Installed-Size}\n", "{package}"]
+apt.installed_size_unit = 1024
+apt.available = ["apt-cache", "pkgnames", "{query}"]
+apt.missing_markers = ["unable to locate package", "has no installation candidate"]
+
+dnf.install = ["dnf", "install", "-y"]
+dnf.install_force = ["dnf", "reinstall", "-y"]
+dnf.refresh = ["dnf", "makecache", "--refresh"]
+dnf.owner = ["rpm", "-qf", "--queryformat", "%{NAME}\n", "{path}"]
+dnf.installed_size = ["rpm", "-q", "--queryformat", "%{SIZE}\n", "{package}"]
+dnf.provider = ["rpm", "-q", "--whatprovides", "--queryformat", "%{NAME}\n", "{capability}"]
+dnf.available = ["dnf", "-q", "repoquery", "--qf", "%{name}\n", "{query}*"]
+dnf.missing_markers = ["no match for argument", "unable to find a match"]
+
+yum.install = ["yum", "install", "-y"]
+yum.install_force = ["yum", "reinstall", "-y"]
+yum.refresh = ["yum", "makecache"]
+yum.owner = ["rpm", "-qf", "--queryformat", "%{NAME}\n", "{path}"]
+yum.installed_size = ["rpm", "-q", "--queryformat", "%{SIZE}\n", "{package}"]
+yum.provider = ["rpm", "-q", "--whatprovides", "--queryformat", "%{NAME}\n", "{capability}"]
+yum.missing_markers = ["no package"]
+
+zypper.install = ["zypper", "--non-interactive", "install", "--auto-agree-with-licenses"]
+zypper.force_flags = ["--force"]
+zypper.refresh = ["zypper", "--non-interactive", "refresh"]
+zypper.owner = ["rpm", "-qf", "--queryformat", "%{NAME}\n", "{path}"]
+zypper.installed_size = ["rpm", "-q", "--queryformat", "%{SIZE}\n", "{package}"]
+zypper.provider = ["rpm", "-q", "--whatprovides", "--queryformat", "%{NAME}\n", "{capability}"]
+zypper.available = ["zypper", "--non-interactive", "--quiet", "search", "--type", "package", "{query}"]
+zypper.available_regex = '^[^|]*\|\s*([^|\s]+)\s*\|'
+zypper.missing_markers = ["no provider of", "not found in package names"]
+
+# pacman forces by *dropping* --needed, so the whole command is replaced.
+pacman.install = ["pacman", "-S", "--noconfirm", "--needed"]
+pacman.install_force = ["pacman", "-S", "--noconfirm"]
+pacman.refresh = ["pacman", "-Sy"]
+pacman.owner = ["pacman", "-Qqo", "{path}"]
+pacman.installed_size = ["pacman", "-Qi", "{package}"]
+pacman.installed_size_regex = '^Installed Size\s*:\s*([0-9.]+)\s*MiB'
+pacman.installed_size_unit = 1048576
+pacman.available = ["pacman", "-Ssq", "^{query}"]
+pacman.missing_markers = ["target not found"]
+
+apk.install = ["apk", "add", "--no-cache"]
+apk.install_force = ["apk", "add", "--no-cache", "--force-overwrite"]
+apk.refresh = ["apk", "update"]
+apk.owner = ["apk", "info", "--who-owns", "{path}"]
+apk.owner_regex = 'owned by (\S+?)-[0-9]'
+apk.missing_markers = ["unable to select packages", "no such package"]
+
+xbps.install = ["xbps-install", "-y"]
+xbps.force_flags = ["-f"]
+xbps.refresh = ["xbps-install", "-S"]
+
+# --noreplace is exactly what --force-install means to skip.
+emerge.install = ["emerge", "--quiet", "--noreplace"]
+emerge.install_force = ["emerge", "--quiet"]
+
+eopkg.install = ["eopkg", "-y", "install"]
+eopkg.force_flags = ["--reinstall"]
+
+urpmi.install = ["urpmi", "--auto"]
+
+swupd.install = ["swupd", "bundle-add"]
+
+nix.install = ["nix-env", "-iA"]
+
+brew.install = ["brew", "install"]
+brew.install_force = ["brew", "reinstall"]
+brew.cask = ["brew", "install", "--cask"]
+
+flatpak.install = ["flatpak", "install", "-y", "--noninteractive"]
+flatpak.force_flags = ["--reinstall"]
+flatpak.remote_add = ["flatpak", "remote-add", "--if-not-exists"]
+flatpak.default_remote = "flathub"
+flatpak.default_remote_url = "https://dl.flathub.org/repo/flathub.flatpakrepo"
+
+snap.install = ["snap", "install"]
+
+npm.install = ["npm", "install", "--global", "--no-fund", "--no-audit"]
+npm.force_flags = ["--force"]
+npm.query = ["npm", "ls", "--global", "--depth", "0", "--json"]
+npm.query_timeout_seconds = 90
+
+pip.install = ["-m", "pip", "install", "--upgrade"]
+pip.force_flags = ["--force-reinstall"]
+pip.unmanaged_flags = ["--break-system-packages"]
+uv.pip_install = ["pip", "install", "--upgrade"]
+uv.force_flags = ["--reinstall"]
+uv.unmanaged_flags = ["--break-system-packages"]
+uv.tool_install = ["tool", "install"]
+uv.tool_force_flags = ["--force"]
+
+####################################################################
+# Known-good older releases, applied only by --downgrade.
+#
+# Each pin is the last release of the minor line before the current one: old
+# enough to predate a toolchain bump, new enough to still receive fixes. This
+# is a starting point, not a lock file -- edit it, and note that a package with
+# no entry here still resolves to its latest release.
+#
+#   initialize-claude-ai run --phases 1 --downgrade
+#   initialize-claude-ai config --set install.downgrade=true install.pins
+####################################################################
+
+[install.pins.pip]
+anthropic = "1.4.0"
+claude-agent-sdk = "0.1.81"
+mcp = "2.1.1"
+
+[install.pins.npm]
+"@anthropic-ai/claude-code" = "2.0.77"
+"@anthropic-ai/claude-agent-sdk" = "0.2.141"
+mcp-remote = "0.12.1"
+supergateway = "3.3.0"
+
+# How a version is joined to a package name, per ecosystem.
+[install.pin_separator]
+pip = "=="
+npm = "@"
+
+# Versions and minimums for the mcp-runtimes group at the end of this file.
+# A minimum left empty accepts any version that runs.
+[install.toolchains]
+# The release the go.dev download fallback fetches when no package manager
+# has Go. Any published release number works.
+go_version = "${INITIALIZE_CLAUDE_AI_GO_VERSION:-1.25.1}"
+go_min_version = "${INITIALIZE_CLAUDE_AI_GO_MIN_VERSION:-}"
+rust_min_version = "${INITIALIZE_CLAUDE_AI_RUST_MIN_VERSION:-}"
+deno_min_version = "${INITIALIZE_CLAUDE_AI_DENO_MIN_VERSION:-}"
+bun_min_version = "${INITIALIZE_CLAUDE_AI_BUN_MIN_VERSION:-}"
+docker_min_version = "${INITIALIZE_CLAUDE_AI_DOCKER_MIN_VERSION:-}"
+
+# Per-component patches over the catalogue below, keyed by component key. Empty
+# here, and present so that `initialize-claude-ai config` shows the extension
+# point exists rather than leaving it to be found in a docstring:
+#
+#   [install.overrides.claude-cli]
+#   strategies = [...]   # replaces the strategy list outright
+#   url = "..."          # patched into every strategy that has that field
+[install.overrides]
+
+# Where Claude Desktop comes from on Linux, which has no official build: an
+# AppImage or .deb/.rpm URL, or a flatpak ref. Both empty, so nothing is
+# installed until you choose a source you trust.
+[install.claude_desktop]
+url = "${INITIALIZE_CLAUDE_AI_CLAUDE_DESKTOP_URL:-}"
+flatpak_ref = "${INITIALIZE_CLAUDE_AI_CLAUDE_DESKTOP_FLATPAK_REF:-}"
+
+####################################################################
+# base -- prerequisites for everything else
+####################################################################
+
+[[components]]
+key = "ca-certificates"
+title = "TLS root certificates"
+group = "base"
+required = true
+  [[components.verify]]
+  kind = "file"
+  paths = ["/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt",
+           "/etc/ssl/ca-bundle.pem", "/etc/ssl/cert.pem", "/private/etc/ssl/cert.pem"]
+  any = true
+  [[components.install]]
+  kind = "system"
+  packages.apt = ["ca-certificates"]
+  packages.dnf = ["ca-certificates"]
+  packages.yum = ["ca-certificates"]
+  packages.zypper = ["ca-certificates"]
+  packages.pacman = ["ca-certificates"]
+  packages.apk = ["ca-certificates"]
+
+[[components]]
+key = "curl"
+title = "curl"
+group = "base"
+required = true
+  [[components.verify]]
+  kind = "binary"
+  names = ["curl"]
+  version_args = ["--version"]
+  env_key = "CURL"
+  [[components.install]]
+  kind = "system"
+  packages.apt = ["curl"]
+  packages.dnf = ["curl"]
+  packages.yum = ["curl"]
+  packages.zypper = ["curl"]
+  packages.pacman = ["curl"]
+  packages.apk = ["curl"]
+  packages.xbps = ["curl"]
+  [[components.install]]
+  kind = "brew"
+  formulas = ["curl"]
+
+[[components]]
+key = "git"
+title = "Git"
+group = "base"
+required = true
+  [[components.verify]]
+  kind = "binary"
+  names = ["git"]
+  version_args = ["--version"]
+  env_key = "GIT"
+  [[components.install]]
+  kind = "system"
+  packages.apt = ["git"]
+  packages.dnf = ["git"]
+  packages.yum = ["git"]
+  packages.zypper = ["git-core"]
+  packages.pacman = ["git"]
+  packages.apk = ["git"]
+  [[components.install]]
+  kind = "brew"
+  formulas = ["git"]
+
+[[components]]
+key = "archive-tools"
+title = "tar / unzip / gzip"
+group = "base"
+required = false
+  [[components.verify]]
+  kind = "binary"
+  names = ["tar"]
+  version_args = ["--version"]
+  [[components.verify]]
+  kind = "binary"
+  names = ["unzip"]
+  version_args = ["-v"]
+  [[components.install]]
+  kind = "system"
+  packages.apt = ["tar", "unzip", "gzip", "xz-utils"]
+  packages.dnf = ["tar", "unzip", "gzip", "xz"]
+  packages.yum = ["tar", "unzip", "gzip", "xz"]
+  packages.zypper = ["tar", "unzip", "gzip", "xz"]
+  packages.pacman = ["tar", "unzip", "gzip", "xz"]
+  packages.apk = ["tar", "unzip", "gzip", "xz"]
+
+####################################################################
+# runtime -- Python and Node, on which everything Claude depends
+####################################################################
+
+[[components]]
+key = "python"
+title = "Python 3 interpreter"
+group = "runtime"
+required = true
+  [[components.verify]]
+  kind = "binary"
+  names = ["python3", "python"]
+  version_args = ["--version"]
+  version_regex = '([0-9]+\.[0-9]+(?:\.[0-9]+)?)'
+  min_version = "3.10"
+  env_key = "PYTHON"
+  [[components.install]]
+  kind = "system"
+  packages.apt = ["python3", "python3-pip", "python3-venv"]
+  packages.dnf = ["python3", "python3-pip"]
+  packages.yum = ["python3", "python3-pip"]
+  packages.zypper = ["python3", "python3-pip"]
+  packages.pacman = ["python", "python-pip"]
+  packages.apk = ["python3", "py3-pip"]
+  [[components.install]]
+  kind = "brew"
+  formulas = ["python@3.12"]
+
+[[components]]
+key = "pip"
+title = "pip"
+group = "runtime"
+required = true
+  [[components.verify]]
+  kind = "command"
+  # Resolved against the interpreter chosen for 'python'.
+  argv = ["{python}", "-m", "pip", "--version"]
+  expect_substring = "pip"
+  [[components.install]]
+  kind = "system"
+  packages.apt = ["python3-pip"]
+  packages.dnf = ["python3-pip"]
+  packages.zypper = ["python3-pip"]
+  packages.pacman = ["python-pip"]
+  packages.apk = ["py3-pip"]
+  [[components.install]]
+  kind = "script"
+  # Last resort when the distro ships no pip package.
+  url = "https://bootstrap.pypa.io/get-pip.py"
+  reinstalls_in_place = true
+  interpreter = "{python}"
+
+[[components]]
+key = "node"
+title = "Node.js runtime"
+group = "runtime"
+required = true
+# What the package manager calls it: rpm -q --whatprovides nodejs -> nodejs26.
+capabilities = ["nodejs"]
+  [[components.verify]]
+  kind = "binary"
+  names = ["node"]
+  version_args = ["--version"]
+  version_regex = 'v?([0-9]+\.[0-9]+\.[0-9]+)'
+  min_version = "18.0.0"
+  env_key = "NODE"
+  [[components.install]]
+  kind = "system"
+  packages.apt = ["nodejs", "npm"]
+  packages.dnf = ["nodejs", "npm"]
+  packages.yum = ["nodejs", "npm"]
+  packages.zypper = ["nodejs22", "npm22"]
+  packages.pacman = ["nodejs", "npm"]
+  packages.apk = ["nodejs", "npm"]
+  # The listed names are one release's: when the repositories have no such
+  # package, the newest matching one is installed instead (nodejs26/npm26).
+  package_patterns.zypper = ['^nodejs[0-9]+$', '^npm[0-9]+$']
+  package_patterns.dnf = ['^nodejs$', '^npm$']
+  [[components.install]]
+  kind = "brew"
+  formulas = ["node"]
+  [[components.install]]
+  kind = "script"
+  # Version-managed fallback that needs no root.  nvm installs into $NVM_DIR,
+  # else $XDG_CONFIG_HOME/nvm, else ~/.nvm -- the shell works that out.
+  url = "https://raw.githubusercontent.com/nvm-sh/nvm/master/install.sh"
+  interpreter = "bash"
+  post_shell = "export NVM_DIR=\"${NVM_DIR:-${XDG_CONFIG_HOME:+$XDG_CONFIG_HOME/nvm}}\"; export NVM_DIR=\"${NVM_DIR:-$HOME/.nvm}\"; . \"$NVM_DIR/nvm.sh\" && nvm install --lts"
+  owns_paths = ["${NVM_DIR}", "${XDG_CONFIG_HOME}/nvm", "~/.nvm"]
+  # Downloading a node release takes longer than a script.
+  timeout_seconds = 1200
+
+[[components]]
+key = "npm"
+title = "npm"
+group = "runtime"
+required = true
+# Programs that arrive with this component without being verified on their
+# own. Phase 1 prefetch and phase 4 on-demand installs map a command to the
+# component that provides it through these names and the verified ones.
+provides = ["npx"]
+  [[components.verify]]
+  kind = "binary"
+  names = ["npm"]
+  version_args = ["--version"]
+  env_key = "NPM"
+  [[components.install]]
+  kind = "system"
+  packages.apt = ["npm"]
+  packages.dnf = ["npm"]
+  packages.zypper = ["npm22"]
+  packages.pacman = ["npm"]
+  packages.apk = ["npm"]
+  package_patterns.zypper = ['^npm[0-9]+$']
+
+[[components]]
+key = "uv"
+title = "uv (fast Python package manager)"
+group = "runtime"
+required = false
+  [[components.verify]]
+  kind = "binary"
+  names = ["uv"]
+  version_args = ["--version"]
+  env_key = "UV"
+  # uvx is how phase 4 launches every PyPI server; a uv without it is not the
+  # uv phase 4 needs.
+  [[components.verify]]
+  kind = "binary"
+  names = ["uvx"]
+  version_args = ["--version"]
+  env_key = "UVX"
+  [[components.install]]
+  kind = "system"
+  packages.pacman = ["uv"]
+  packages.apk = ["uv"]
+  [[components.install]]
+  kind = "brew"
+  formulas = ["uv"]
+  [[components.install]]
+  kind = "script"
+  url = "https://astral.sh/uv/install.sh"
+  reinstalls_in_place = true
+  interpreter = "sh"
+
+####################################################################
+# claude -- the CLI and the SDKs
+####################################################################
+
+[[components]]
+key = "claude-cli"
+title = "Claude Code CLI"
+group = "claude"
+required = true
+  [[components.verify]]
+  kind = "binary"
+  names = ["claude"]
+  version_args = ["--version"]
+  version_regex = '([0-9]+\.[0-9]+\.[0-9]+)'
+  env_key = "CLAUDE"
+  [[components.verify]]
+  kind = "command"
+  # Proves the binary can actually execute its own subcommand tree, not just
+  # print a version string.
+  argv = ["{claude}", "mcp", "--help"]
+  expect_substring = "mcp"
+  optional = true
+  [[components.install]]
+  kind = "script"
+  # Official native installer; no Node required, self-updating.
+  url = "https://claude.ai/install.sh"
+  reinstalls_in_place = true
+  owns_paths = ["~/.local/share/claude"]
+  interpreter = "bash"
+  [[components.install]]
+  kind = "npm"
+  packages = ["@anthropic-ai/claude-code"]
+
+[[components]]
+key = "claude-sdk-python"
+title = "Anthropic Python SDK"
+group = "claude"
+required = true
+  [[components.verify]]
+  kind = "python_module"
+  modules = ["anthropic"]
+  distribution = "anthropic"
+  [[components.install]]
+  kind = "pip"
+  packages = ["anthropic"]
+
+[[components]]
+key = "claude-agent-sdk-python"
+title = "Claude Agent SDK (Python)"
+group = "claude"
+required = true
+  [[components.verify]]
+  kind = "python_module"
+  modules = ["claude_agent_sdk"]
+  distribution = "claude-agent-sdk"
+  # Which Claude Code the SDK runs (mcp.agent.sdk_cli).  The SDK ships its own
+  # copy, and 0.2.152's 2.1.259 answered "does not support this model" while
+  # the installed 2.1.309 served it.  Not usable when the copy that runs is
+  # older than one installed here.
+  [[components.verify]]
+  kind = "agent_cli"
+  purpose = "usable"
+  remedy = "set mcp.agent.sdk_cli = auto (the default) so the SDK runs the installed Claude Code, or update claude-agent-sdk"
+  [[components.install]]
+  kind = "pip"
+  packages = ["claude-agent-sdk"]
+
+[[components]]
+key = "claude-agent-sdk-node"
+title = "Claude Agent SDK (TypeScript)"
+group = "claude"
+required = false
+  [[components.verify]]
+  kind = "node_package"
+  packages = ["@anthropic-ai/claude-agent-sdk"]
+  [[components.install]]
+  kind = "npm"
+  packages = ["@anthropic-ai/claude-agent-sdk"]
+
+[[components]]
+key = "claude-desktop"
+title = "Claude Desktop application"
+group = "desktop"
+required = false
+# No officially supported Linux build exists at time of writing; the strategies
+# below are therefore data-driven and inert until an operator supplies a source.
+# Set install.claude_desktop.url / .flatpak_ref (below, under [install]) or
+# override this component in your own config.
+  [[components.verify]]
+  kind = "binary"
+  names = ["claude-desktop", "Claude"]
+  version_args = ["--version"]
+  env_key = "CLAUDE_DESKTOP"
+  optional = true
+  [[components.verify]]
+  kind = "file"
+  paths = [
+      "/Applications/Claude.app",
+      "${HOME}/Applications/Claude.app",
+      "/usr/share/applications/claude-desktop.desktop",
+      "${HOME}/.local/share/applications/claude-desktop.desktop",
+      "/var/lib/flatpak/exports/share/applications/*Claude*.desktop",
+      "${HOME}/.local/share/flatpak/exports/share/applications/*Claude*.desktop",
+  ]
+  any = true
+  optional = true
+  [[components.install]]
+  kind = "brew"
+  casks = ["claude"]
+  platforms = ["Darwin"]
+  [[components.install]]
+  kind = "flatpak"
+  # Empty by default: set install.claude_desktop.flatpak_ref if you trust a
+  # community build.
+  refs = "${cfg:install.claude_desktop.flatpak_ref}"
+  [[components.install]]
+  kind = "download"
+  # e.g. https://storage.googleapis.com/.../Claude-{arch}.AppImage -- operator supplied.
+  url = "${cfg:install.claude_desktop.url}"
+  install_dir = "${HOME}/.local/bin"
+  binary_name = "claude-desktop"
+  [[components.install]]
+  kind = "manual"
+  instructions = [
+      "Claude Desktop ships officially for macOS and Windows: https://claude.ai/download",
+      "On Linux there is no official build. Either use the Claude Code CLI (already installed),",
+      "or point initialize-claude-ai at a package you trust:",
+      "  initialize-claude-ai run --phases 1 --set install.claude_desktop.url=<AppImage or .deb/.rpm URL>",
+      "  initialize-claude-ai run --phases 1 --set install.claude_desktop.flatpak_ref=<flatpak ref>",
+  ]
+
+####################################################################
+# cloud -- Google Cloud CLI, required for Vertex AI authentication
+####################################################################
+
+[[components]]
+key = "gcloud"
+title = "Google Cloud CLI"
+group = "cloud"
+required = true
+  [[components.verify]]
+  kind = "binary"
+  names = ["gcloud"]
+  version_args = ["--version"]
+  version_regex = 'Google Cloud SDK ([0-9]+\.[0-9]+\.[0-9]+)'
+  env_key = "GCLOUD"
+  [[components.verify]]
+  kind = "command"
+  argv = ["{gcloud}", "components", "list", "--format=value(id)", "--quiet"]
+  optional = true
+  [[components.install]]
+  kind = "system"
+  # Available directly on these distributions.
+  packages.pacman = ["google-cloud-cli"]
+  packages.apk = ["google-cloud-cli"]
+  [[components.install]]
+  kind = "brew"
+  casks = ["google-cloud-sdk"]
+  [[components.install]]
+  kind = "script"
+  # Official cross-distro installer; installs under $HOME, needs no root.
+  url = "https://sdk.cloud.google.com"
+  interpreter = "bash"
+  args = ["--disable-prompts", "--install-dir=${HOME}"]
+  adds_bin_dir = "${HOME}/google-cloud-sdk/bin"
+  # The script refuses a folder that exists; gcloud repairs itself in place.
+  reinstall_argv = ["{binary}", "components", "reinstall", "--quiet"]
+  # It stages a whole copy of the SDK beside the one in use.
+  space_factor = 2
+  timeout_seconds = 1200
+  [[components.install]]
+  kind = "snap"
+  packages = ["google-cloud-cli"]
+  classic = true
+
+[[components]]
+key = "gcloud-auth-plugin"
+title = "gke-gcloud-auth-plugin"
+group = "cloud"
+required = false
+  [[components.verify]]
+  kind = "binary"
+  names = ["gke-gcloud-auth-plugin"]
+  version_args = ["--version"]
+  optional = true
+  [[components.install]]
+  kind = "command"
+  argv = ["{gcloud}", "components", "install", "gke-gcloud-auth-plugin", "--quiet"]
+
+####################################################################
+# browser -- needed for interactive OAuth; skipped on headless hosts
+####################################################################
+
+[[components]]
+key = "browser"
+title = "Web browser (for OAuth sign-in)"
+group = "browser"
+required = false
+  [[components.verify]]
+  kind = "binary"
+  # Browsers only. xdg-open used to be in this list and satisfied the check on
+  # its own, which meant a machine with a launcher and nothing to launch was
+  # reported as having a browser -- and then the sign-in opened nothing and hung
+  # waiting for a redirect that could not come. The launcher is a separate
+  # component below, and keeping the two apart is the whole point of the split.
+  # Kept in step with auth.browser.candidates in 20-auth.toml.
+  names = ["firefox", "firefox-esr", "firefox-bin", "chromium", "chromium-browser",
+           "google-chrome", "google-chrome-stable", "brave-browser", "vivaldi-stable",
+           "microsoft-edge", "microsoft-edge-stable", "epiphany", "falkon", "konqueror"]
+  version_args = ["--version"]
+  any = true
+  optional = true
+  [[components.install]]
+  kind = "system"
+  # One `packages.apt` list serves Debian and Ubuntu alike, and apt fails the
+  # whole command when any one name is unknown -- so a list naming both firefox
+  # and firefox-esr would install neither. Ubuntu's package is `firefox`; this
+  # strategy is tried first, and Debian falls through to the next one.
+  packages.apt = ["firefox"]
+  packages.dnf = ["firefox"]
+  packages.yum = ["firefox"]
+  packages.zypper = ["MozillaFirefox"]
+  packages.pacman = ["firefox"]
+  packages.apk = ["firefox"]
+  [[components.install]]
+  kind = "system"
+  # Debian, where `firefox` is not in the archive at all and the extended
+  # support release is what ships. Strategies are tried in order until one
+  # succeeds, so this costs an Ubuntu host one failed apt call and nothing else.
+  packages.apt = ["firefox-esr"]
+  [[components.install]]
+  kind = "flatpak"
+  refs = ["org.mozilla.firefox"]
+  [[components.install]]
+  kind = "snap"
+  packages = ["firefox"]
+  [[components.install]]
+  kind = "manual"
+  instructions = [
+      "No browser was installed. Authentication will use headless device-code flows:",
+      "  gcloud auth login --no-launch-browser",
+      "  claude setup-token   (paste the URL into a browser on another machine)",
+      "Or pass --headless to choose that up front.",
+  ]
+
+[[components]]
+key = "xdg-utils"
+title = "xdg-open (browser launcher)"
+group = "browser"
+required = false
+  [[components.verify]]
+  kind = "binary"
+  names = ["xdg-open"]
+  version_args = ["--version"]
+  optional = true
+  [[components.install]]
+  kind = "system"
+  packages.apt = ["xdg-utils"]
+  packages.dnf = ["xdg-utils"]
+  packages.yum = ["xdg-utils"]
+  packages.zypper = ["xdg-utils"]
+  packages.pacman = ["xdg-utils"]
+  packages.apk = ["xdg-utils"]
+
+[[components]]
+key = "clipboard"
+title = "Clipboard tool (for the sign-in URL)"
+group = "browser"
+required = false
+# A pasted-code sign-in prints a URL of several hundred characters that has to
+# get to a browser somehow. With one of these installed it goes to the clipboard
+# by itself and nobody has to select it off a wrapped screen -- and the claude
+# CLI's own "press c to copy" starts working too, since that shells out to
+# exactly these. Kept in step with [auth.signin.clipboard] in 20-auth.toml.
+  [[components.verify]]
+  kind = "binary"
+  names = ["wl-copy", "xclip", "xsel", "pbcopy", "clip.exe"]
+  any = true
+  optional = true
+  [[components.install]]
+  kind = "system"
+  # Wayland and X11 want different tools and a desktop may run either, so both
+  # are installed where the package manager has them.
+  packages.apt = ["xclip", "wl-clipboard"]
+  packages.dnf = ["xclip", "wl-clipboard"]
+  packages.yum = ["xclip"]
+  packages.zypper = ["xclip", "wl-clipboard"]
+  packages.pacman = ["xclip", "wl-clipboard"]
+  packages.apk = ["xclip", "wl-clipboard"]
+  [[components.install]]
+  kind = "system"
+  # Older archives that carry only the X11 half.
+  packages.apt = ["xclip"]
+  packages.dnf = ["xclip"]
+  packages.zypper = ["xclip"]
+  packages.pacman = ["xclip"]
+  packages.apk = ["xclip"]
+  [[components.install]]
+  kind = "manual"
+  instructions = [
+      "No clipboard tool was installed. The sign-in URL is still written to a file:",
+      "  cat \"$INITIALIZE_CLAUDE_AI_STATE_DIR/sign-in-url.txt\"",
+  ]
+
+[[components]]
+key = "wslu"
+title = "wslview (opens the Windows browser from WSL)"
+group = "browser"
+required = false
+# Not an operating system but a place inside one: `wsl` is a trait, and no
+# distribution outside WSL carries this package. See PlatformInfo.traits.
+platforms = ["wsl"]
+# A WSL install has a perfectly good browser; it is simply on the other side of
+# the machine. wslview hands it the URL, so the sign-in URL is opened there for
+# the operator. Without wslview it looks headless, and every operator on WSL
+# has to carry the URL across by hand for no reason.
+  [[components.verify]]
+  kind = "binary"
+  names = ["wslview"]
+  version_args = ["--version"]
+  optional = true
+  [[components.install]]
+  kind = "system"
+  packages.apt = ["wslu"]
+  packages.dnf = ["wslu"]
+  packages.zypper = ["wslu"]
+  packages.pacman = ["wslu"]
+
+####################################################################
+# mcp-tooling -- helpers phase 4 can use to bridge or host MCP servers
+####################################################################
+
+[[components]]
+key = "mcp-python"
+title = "MCP Python SDK"
+group = "mcp-tooling"
+required = false
+  [[components.verify]]
+  kind = "python_module"
+  modules = ["mcp"]
+  distribution = "mcp"
+  optional = true
+  [[components.install]]
+  kind = "pip"
+  packages = ["mcp"]
+
+[[components]]
+key = "mcp-bridges"
+title = "MCP stdio<->HTTP bridges"
+group = "mcp-tooling"
+required = false
+  [[components.verify]]
+  kind = "node_package"
+  packages = ["mcp-remote", "supergateway"]
+  any = true
+  optional = true
+  [[components.install]]
+  kind = "npm"
+  packages = ["mcp-remote", "supergateway"]
+
+####################################################################
+# mcp-runtimes -- toolchains an MCP server may be launched or built with
+#
+# Not installed by default. They arrive through --install-prefetch (phase 1)
+# or --mcp-provision-missing (phase 4, only when a candidate actually needs
+# one). Extra fields these entries use:
+#   provides         commands that come with the component (bunx with bun)
+#   on_demand        false: phase 4 never installs it on its own
+#   prefetch         false: --install-prefetch launchers leaves it out
+#   bin_dir_queries  ask the tool where it puts what it installs; the first
+#                    non-empty answer (plus suffix) joins the search path and
+#                    the recorded environment
+####################################################################
+
+[[components]]
+key = "go"
+title = "Go toolchain"
+group = "mcp-runtimes"
+required = false
+provides = ["gofmt"]
+bin_dir_queries = [
+    { args = ["env", "GOBIN"] },
+    { args = ["env", "GOPATH"], suffix = "bin" },
+]
+  [[components.verify]]
+  kind = "binary"
+  names = ["go"]
+  version_args = ["version"]
+  version_regex = 'go([0-9]+\.[0-9]+(?:\.[0-9]+)?)'
+  min_version = "${cfg:install.toolchains.go_min_version}"
+  env_key = "GO"
+  [[components.install]]
+  kind = "system"
+  packages.apt = ["golang-go"]
+  packages.dnf = ["golang"]
+  packages.yum = ["golang"]
+  packages.zypper = ["go"]
+  packages.pacman = ["go"]
+  packages.apk = ["go"]
+  [[components.install]]
+  kind = "brew"
+  formulas = ["go"]
+  [[components.install]]
+  kind = "download"
+  # The official tarball; its top directory is go/.
+  url = "https://go.dev/dl/go${cfg:install.toolchains.go_version}.{os}-{arch}.tar.gz"
+  # go.dev spells architectures its own way; {arch} above uses these.
+  arch_names = { x64 = "amd64", arm64 = "arm64", x86 = "386", armv7 = "armv6l" }
+  install_dir = "${HOME}/.local/share"
+  adds_bin_dir = "${HOME}/.local/share/go/bin"
+
+[[components]]
+key = "rust"
+title = "Rust toolchain (cargo)"
+group = "mcp-runtimes"
+required = false
+provides = ["rustc", "rustup"]
+  [[components.verify]]
+  kind = "binary"
+  names = ["cargo"]
+  version_args = ["--version"]
+  min_version = "${cfg:install.toolchains.rust_min_version}"
+  env_key = "CARGO"
+  [[components.install]]
+  kind = "system"
+  packages.apt = ["cargo"]
+  packages.dnf = ["cargo"]
+  packages.yum = ["cargo"]
+  packages.zypper = ["cargo"]
+  packages.pacman = ["rust"]
+  packages.apk = ["cargo"]
+  [[components.install]]
+  kind = "brew"
+  formulas = ["rust"]
+  [[components.install]]
+  kind = "script"
+  # rustup, into the user's home; no root, and the shell profile left alone.
+  url = "https://sh.rustup.rs"
+  # rustup repairs and updates its own toolchains in place.
+  reinstall_argv = ["rustup", "update"]
+  interpreter = "sh"
+  args = ["-y", "--no-modify-path"]
+  adds_bin_dir = "${HOME}/.cargo/bin"
+
+[[components]]
+key = "deno"
+title = "Deno runtime"
+group = "mcp-runtimes"
+required = false
+  [[components.verify]]
+  kind = "binary"
+  names = ["deno"]
+  version_args = ["--version"]
+  min_version = "${cfg:install.toolchains.deno_min_version}"
+  env_key = "DENO"
+  [[components.install]]
+  kind = "system"
+  packages.pacman = ["deno"]
+  [[components.install]]
+  kind = "brew"
+  formulas = ["deno"]
+  [[components.install]]
+  kind = "script"
+  url = "https://deno.land/install.sh"
+  reinstalls_in_place = true
+  interpreter = "sh"
+  args = ["-y"]
+  adds_bin_dir = "${HOME}/.deno/bin"
+
+[[components]]
+key = "bun"
+title = "Bun runtime"
+group = "mcp-runtimes"
+required = false
+provides = ["bunx"]
+  [[components.verify]]
+  kind = "binary"
+  names = ["bun"]
+  version_args = ["--version"]
+  min_version = "${cfg:install.toolchains.bun_min_version}"
+  env_key = "BUN"
+  [[components.install]]
+  kind = "brew"
+  formulas = ["oven-sh/bun/bun"]
+  [[components.install]]
+  kind = "script"
+  url = "https://bun.sh/install"
+  reinstalls_in_place = true
+  interpreter = "bash"
+  adds_bin_dir = "${HOME}/.bun/bin"
+
+[[components]]
+key = "docker"
+title = "Container engine CLI (docker)"
+group = "mcp-runtimes"
+required = false
+# A container engine is a system service, not a user tool: it is installed
+# only when asked for by name or by --install-prefetch all.
+on_demand = false
+prefetch = false
+  [[components.verify]]
+  kind = "binary"
+  names = ["docker"]
+  version_args = ["--version"]
+  min_version = "${cfg:install.toolchains.docker_min_version}"
+  env_key = "DOCKER"
+  # Installed is not usable: a server launched with `docker run` needs the
+  # daemon, and the socket open to this user.  gitlab.example.net's container
+  # candidate was rejected as "not accepted" with the daemon stopped.
+  [[components.verify]]
+  kind = "command"
+  purpose = "usable"
+  argv = ["docker", "info"]
+  timeout_seconds = 30
+  remedy = "make the container engine reachable: start its service, and let this user reach its socket"
+  remedies."Cannot connect to the Docker daemon" = "start the Docker service: sudo systemctl enable --now docker"
+  remedies."Is the docker daemon running" = "start the Docker service: sudo systemctl enable --now docker"
+  remedies."permission denied" = "let this user reach the Docker socket: sudo usermod -aG docker $USER, then log in again"
+  [[components.install]]
+  kind = "system"
+  packages.apt = ["docker.io"]
+  packages.dnf = ["podman-docker"]
+  packages.yum = ["podman-docker"]
+  packages.zypper = ["docker"]
+  packages.pacman = ["docker"]
+  packages.apk = ["docker"]

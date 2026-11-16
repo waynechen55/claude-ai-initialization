@@ -1,0 +1,91 @@
+# Python build and cache artefacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+.venv/
+venv/
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Editors
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# ---------------------------------------------------------------------------
+# Output this program produces, and local state. None of it is source, and all
+# of it describes the machine it was produced on -- project IDs, internal
+# hostnames, which servers a run found. Ignored so that running the tool inside
+# its own checkout, which is the normal way to try a change, cannot commit your
+# environment along with it.
+# ---------------------------------------------------------------------------
+
+# The run transcript (paths.log_file), written into the working directory.
+claude_ai_initialization.log
+initialize-claude-ai.log
+
+# Phase 4 output: discovered MCP servers for whatever you pointed it at.
+.mcp.json
+# ...and every copy of it: a backup holds whatever the file held when it was
+# taken -- a credential an operator pasted in included.
+.mcp.json.*
+# ... and the bridges it generated for them (mcp.bridge.generated.filename_template,
+# default mcp_bridge_{slug}.py), with the manifests and CA chains they read. They
+# name internal hosts; .mcp.json may point at a copy in the working directory.
+/mcp_bridge_*.py
+/mcp-servers/
+/*.operations.json
+/*-ca-chain.pem
+
+# Phase 3 output: the Claude Code settings this program writes, which carry the
+# backend, project and region it resolved for this host.
+settings.json
+# The backups the settings writer takes before each change (settings.json.<stamp>.bak),
+# here and under .claude/ -- the private settings file holds credentials.
+settings.json.*.bak
+.claude/settings*.json.*.bak
+
+# Local Claude Code state in a checkout.
+.claude/settings.local.json
+
+# Real credentials and local overrides. .env.example is the documented template
+# and IS tracked; .env is yours and must never be.
+.env
+.env.*
+!.env.example
+initialize-claude-ai.toml
+
+# Certificates and bundles a run learned or an operator dropped here: they name
+# internal authorities, and a private key must never be committed.
+*.pem
+*.pem.bak
+*.key
+*.bak
+# Files phase 4 places beside .mcp.json so entries travel (bridges, trust
+# bundles, downloaded binaries), and scratch folders of manual runs.
+/bridges/
+/trust/
+/bin/
+/wd/
+/artifacts/
+/empty-xdg-config/
+# Exported Claude Code conversations.
+claude_history_*
+# Shell dotfiles copied in for a test.
+.bashrc
+.profile
+
+# CI / release byproducts
+coverage.xml
+.coverage.*
+/release-notes.md

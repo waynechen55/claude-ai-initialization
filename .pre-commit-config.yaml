@@ -1,0 +1,37 @@
+# Optional local hooks: pip install pre-commit && pre-commit install
+# They run a subset of what CI runs; `make check` runs all of it.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.13
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-toml
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: detect-private-key
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+  - repo: local
+    hooks:
+      - id: internal-names
+        name: no internal host names or personal paths
+        entry: python3 tools/check_names.py
+        language: system
+        types: [text]
+      - id: generated-docs
+        name: generated references are current
+        entry: python3 tools/gen_docs.py --check
+        language: system
+        pass_filenames: false
+        files: ^(initialize_claude_ai/(cli\.py|data/.*\.toml)|tools/gen_docs\.py)$
